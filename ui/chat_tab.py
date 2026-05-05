@@ -4,6 +4,7 @@ ChatTab - 채팅 탭 (QWebEngineView + marked.js + highlight.js)
 
 import sys
 import json
+import uuid
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -15,6 +16,9 @@ from PyQt6.QtCore import Qt, pyqtSignal, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWebEngineCore import QWebEnginePage
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from ui.stt_button import STTButton
+
+from cache_store import ChatCache
 
 
 class _AutoExpandingEdit(QPlainTextEdit):
@@ -80,9 +84,19 @@ class _AutoExpandingEdit(QPlainTextEdit):
 
 
 _COPY_PREFIX = "__COPY__:"
+_SAVE_PREFIX = "__SAVE_CHAT__:"
+_UNSAVE_PREFIX = "__UNSAVE_CHAT__:"
 
 class _ExternalLinkPage(QWebEnginePage):
-    """링크 클릭 시 시스템 기본 브라우저로 열기 + console 메시지로 클립보드 복사"""
+    """링크 클릭 시 시스템 기본 브라우저로 열기 + console 메시지로 클립보드/캐시 처리.
+
+    save/unsave 콜백을 ChatTab에서 주입받아 호출한다.
+    """
+    def __init__(self, parent=None, save_handler=None, unsave_handler=None):
+        super().__init__(parent)
+        self._save_handler = save_handler
+        self._unsave_handler = unsave_handler
+
     def acceptNavigationRequest(self, url, nav_type, is_main_frame):
         if nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
             QDesktopServices.openUrl(url)
@@ -91,8 +105,14 @@ class _ExternalLinkPage(QWebEnginePage):
 
     def javaScriptConsoleMessage(self, level, message, line, source):
         if message.startswith(_COPY_PREFIX):
-            text = message[len(_COPY_PREFIX):]
-            QApplication.clipboard().setText(text)
+            QApplication.clipboard().setText(message[len(_COPY_PREFIX):])
+            return
+        if message.startswith(_SAVE_PREFIX) and self._save_handler:
+            self._save_handler(message[len(_SAVE_PREFIX):])
+            return
+        if message.startswith(_UNSAVE_PREFIX) and self._unsave_handler:
+            self._unsave_handler(message[len(_UNSAVE_PREFIX):])
+            return
         # 다른 콘솔 메시지는 무시 (디버그용으로 super 호출 가능)
 
 
@@ -200,6 +220,7 @@ class ChatTab(QWidget):
     query_submitted = pyqtSignal(str, bool)   # (query, is_suggested)
     force_stop_requested = pyqtSignal()       # Force Mode 중지 요청
     llm_stop_requested = pyqtSignal()         # 일반 모드 스트리밍 중지 요청
+    cache_updated = pyqtSignal()              # 캐시 저장/삭제 시 emit (CachedResponsesTab refresh용)
 
     def __init__(self):
         super().__init__()
@@ -208,7 +229,22 @@ class ChatTab(QWidget):
         self._is_streaming  = False
         self._page_loaded   = False
         self._pending_js: list[str] = []
+        self._stt_language = "ko"
+        self._recorder   = None
+        self._stt_worker = None
+
+        # 캐시 관련 상태
+        self._cache_dir: str = ".rag_cache"
+        self._last_source_notebooks: list = []   # 직전 RAG 응답의 출처 노트북 목록
+        self._last_mode: str = "rag"             # "rag" | "force"
+        self._recent_messages: dict = {}         # message_id → {query, answer, source_notebooks, mode}
+
         self._build_ui()
+
+    # ── 캐시 디렉토리 ─────────────────────────────────────────────────────────
+
+    def set_cache_dir(self, path: str):
+        self._cache_dir = path
 
     # ── 노트북 목록 ───────────────────────────────────────────────────────────
 
@@ -232,17 +268,30 @@ class ChatTab(QWidget):
         if not ok:
             return
         self._page_loaded = True
-        # 기존 메시지 히스토리 복원
+        # 기존 메시지 히스토리 복원 (AI 메시지에는 새 message_id를 발급해 캐시 버튼 동작 가능)
+        prev_user = ""
         for msg in self._messages:
             jtext = json.dumps(msg["content"])
             if msg["role"] == "user":
+                prev_user = msg["content"]
                 self.chat_display.page().runJavaScript(
                     f"appendUserMessage({jtext})"
                 )
             else:
+                msg_id = str(uuid.uuid4())
+                # 모드 추정: 직전 user 메시지에 force prefix가 있으면 force
+                mode = "force" if "\U0001f50d [Force Mode]" in prev_user else "rag"
+                # 출처는 세션 내에서만 보유 — 복원 시 빈 리스트 (source_notebooks는 휘발성)
+                self._recent_messages[msg_id] = {
+                    "query": prev_user,
+                    "answer": msg["content"],
+                    "source_notebooks": [],
+                    "mode": mode,
+                }
                 self.chat_display.page().runJavaScript(
-                    f"appendFinishedAiMessage({jtext})"
+                    f"appendFinishedAiMessage({jtext}, {json.dumps(msg_id)}, false)"
                 )
+                prev_user = ""
         # 대기 중이던 JS 실행
         for js in self._pending_js:
             self.chat_display.page().runJavaScript(js)
@@ -303,7 +352,11 @@ class ChatTab(QWidget):
 
         # ── 채팅 히스토리 (QWebEngineView) ────────────────────────────────────
         self.chat_display = QWebEngineView()
-        self.chat_display.setPage(_ExternalLinkPage(self.chat_display))
+        self.chat_display.setPage(_ExternalLinkPage(
+            self.chat_display,
+            save_handler=self._handle_save_request,
+            unsave_handler=self._handle_unsave_request,
+        ))
         self.chat_display.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         html_path = _base / "resources" / "chat.html"
         self.chat_display.setUrl(QUrl.fromLocalFile(str(html_path.resolve())))
@@ -420,8 +473,12 @@ class ChatTab(QWidget):
         self.clear_btn.setFixedWidth(40)
         self.clear_btn.setToolTip("대화 초기화")
         self.clear_btn.clicked.connect(self.clear_chat)
+        self.mic_btn = STTButton()
+        self.mic_btn.record_start.connect(self._on_mic_start)
+        self.mic_btn.record_stop.connect(self._on_mic_stop)
         input_row.setAlignment(Qt.AlignmentFlag.AlignBottom)
         input_row.addWidget(self.input_edit)
+        input_row.addWidget(self.mic_btn)
         input_row.addWidget(self.send_btn)
         input_row.addWidget(self.clear_btn)
         layout.addLayout(input_row)
@@ -435,6 +492,7 @@ class ChatTab(QWidget):
         self._is_streaming  = True
         self._run_js("startAiMessage()")
         self.input_edit.setEnabled(False)
+        self.mic_btn.set_enabled_stt(False)
         self.send_btn.setText("⏹")
         self.send_btn.setStyleSheet(
             "QPushButton { background: #dc2626; color: white; border: none; "
@@ -462,8 +520,40 @@ class ChatTab(QWidget):
         self._is_streaming = False
         self._streaming_buf = ""
         self._messages.append({"role": "assistant", "content": answer})
-        # 최종 버퍼를 answer로 설정 후 finishAiMessage 호출
-        self._run_js(f"streamingBuffer={json.dumps(answer)};finishAiMessage()")
+
+        # 출처 노트북 추출 (캐시 저장 시 인덱스로 사용)
+        source_nbs = []
+        if result:
+            seen = set()
+            for d in result.get("all_docs", []) or []:
+                nb = getattr(d, "metadata", {}).get("notebook") if hasattr(d, "metadata") else None
+                if nb and nb not in seen:
+                    seen.add(nb)
+                    source_nbs.append(nb)
+        self._last_source_notebooks = source_nbs
+        self._last_mode = "rag"
+
+        # message_id 발급 + recent_messages에 캐시
+        msg_id = str(uuid.uuid4())
+        last_user = ""
+        for m in reversed(self._messages[:-1]):
+            if m["role"] == "user":
+                last_user = m["content"]
+                break
+        self._recent_messages[msg_id] = {
+            "query": last_user,
+            "answer": answer,
+            "source_notebooks": source_nbs,
+            "mode": "rag",
+        }
+        if len(self._recent_messages) > 100:
+            self._recent_messages.pop(next(iter(self._recent_messages)))
+
+        # 최종 버퍼를 answer로 설정 후 finishAiMessage 호출 (msg_id 전달)
+        self._run_js(
+            f"streamingBuffer={json.dumps(answer)};"
+            f"finishAiMessage({json.dumps(msg_id)})"
+        )
         self._render_sources(result)
         self.input_edit.setEnabled(True)
         self._restore_send_btn()
@@ -475,6 +565,53 @@ class ChatTab(QWidget):
         self.send_btn.setText("전송")
         self.send_btn.setStyleSheet("")
         self.send_btn.setEnabled(True)
+        self.mic_btn.set_enabled_stt(True)
+
+    # ── STT (음성 입력) ───────────────────────────────────────────────────────
+
+    def set_stt_language(self, language: str):
+        self._stt_language = language
+
+    def _on_mic_start(self):
+        from workers.stt_worker import AudioRecorder
+        if self._recorder and self._recorder.isRunning():
+            return
+        self._recorder = AudioRecorder(self)
+        self._recorder.finished.connect(self._on_recording_done)
+        self._recorder.error.connect(self._on_stt_error)
+        self._recorder.start()
+        self.mic_btn.set_recording(True)
+
+    def _on_mic_stop(self):
+        if self._recorder and self._recorder.isRunning():
+            self._recorder.stop_recording()
+        self.mic_btn.set_enabled_stt(False)
+
+    def _on_recording_done(self, audio_bytes: bytes):
+        self.mic_btn.set_recording(False)
+        from workers.stt_worker import STTWorker
+        self._stt_worker = STTWorker(audio_bytes, self._stt_language, self)
+        self._stt_worker.finished.connect(self._on_transcription_done)
+        self._stt_worker.error.connect(self._on_stt_error)
+        self._stt_worker.start()
+        self.status_label.setText("🎙️ 음성 변환 중…")
+
+    def _on_transcription_done(self, text: str):
+        self.status_label.setText("")
+        cursor = self.input_edit.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.input_edit.setTextCursor(cursor)
+        existing = self.input_edit.toPlainText()
+        if existing and not existing.endswith(" "):
+            self.input_edit.insertPlainText(" " + text)
+        else:
+            self.input_edit.insertPlainText(text)
+        self.mic_btn.set_enabled_stt(True)
+
+    def _on_stt_error(self, msg: str):
+        self.mic_btn.set_recording(False)
+        self.mic_btn.set_enabled_stt(True)
+        self.status_label.setText(f"🎙️ STT 오류: {msg}")
 
     # ── Force Mode API ────────────────────────────────────────────────────────
 
@@ -486,6 +623,7 @@ class ChatTab(QWidget):
         self._run_js("startAiMessage()")
         self.input_edit.setEnabled(False)
         self.send_btn.setEnabled(False)
+        self.mic_btn.set_enabled_stt(False)
         self.sources_group.setVisible(False)
         self.force_bar.setVisible(True)
         self.force_progress.setValue(0)
@@ -506,10 +644,36 @@ class ChatTab(QWidget):
         self._is_streaming = False
         self._streaming_buf = ""
         self._messages.append({"role": "assistant", "content": answer})
-        self._run_js(f"streamingBuffer={json.dumps(answer)};finishAiMessage()")
+
+        self._last_source_notebooks = []
+        self._last_mode = "force"
+
+        # message_id 발급 + recent_messages에 캐시 (Force는 RAG 출처 없음)
+        msg_id = str(uuid.uuid4())
+        last_user = ""
+        for m in reversed(self._messages[:-1]):
+            if m["role"] == "user":
+                last_user = m["content"]
+                # Force prefix 제거
+                last_user = last_user.replace("\U0001f50d [Force Mode] ", "")
+                break
+        self._recent_messages[msg_id] = {
+            "query": last_user,
+            "answer": answer,
+            "source_notebooks": [],
+            "mode": "force",
+        }
+        if len(self._recent_messages) > 100:
+            self._recent_messages.pop(next(iter(self._recent_messages)))
+
+        self._run_js(
+            f"streamingBuffer={json.dumps(answer)};"
+            f"finishAiMessage({json.dumps(msg_id)})"
+        )
         self.force_bar.setVisible(False)
         self.input_edit.setEnabled(True)
         self.send_btn.setEnabled(True)
+        self.mic_btn.set_enabled_stt(True)
         self.status_label.setText("")
         self.example_bar.setVisible(False)
 
@@ -521,6 +685,7 @@ class ChatTab(QWidget):
         self.status_label.setText(f"❌ 오류: {msg}")
         self.input_edit.setEnabled(True)
         self.send_btn.setEnabled(True)
+        self.mic_btn.set_enabled_stt(True)
 
     def update_suggested_chips(self, queries: list[str]):
         """추천 검색어 칩 업데이트"""
@@ -660,3 +825,34 @@ class ChatTab(QWidget):
             item = layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+
+    # ── 캐시 저장/삭제 ────────────────────────────────────────────────────────
+
+    def _handle_save_request(self, message_id: str):
+        entry = self._recent_messages.get(message_id)
+        if not entry:
+            return
+        cache = ChatCache(self._cache_dir)
+        # 같은 id가 이미 저장돼 있으면 중복 저장 방지
+        for e in cache.iter_entries():
+            if e.get("id") == message_id:
+                return
+        cache.add(
+            entry.get("query") or "",
+            entry.get("answer") or "",
+            source_notebooks=entry.get("source_notebooks") or [],
+            mode=entry.get("mode") or "rag",
+            entry_id=message_id,
+        )
+        self.cache_updated.emit()
+
+    def _handle_unsave_request(self, message_id: str):
+        cache = ChatCache(self._cache_dir)
+        if cache.delete(message_id):
+            self.cache_updated.emit()
+
+    def on_cache_entry_deleted(self, scope: str, entry_id: str):
+        """CachedResponsesTab.entry_deleted 수신 — 해당 버블의 💾 버튼 상태 복원."""
+        if scope != "chat":
+            return
+        self._run_js(f"markCached({json.dumps(entry_id)}, false)")

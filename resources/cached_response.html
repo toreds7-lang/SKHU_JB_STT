@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="css/katex.min.css">
+<script src="js/marked.min.js"></script>
+<script src="js/highlight.min.js"></script>
+<script src="js/katex.min.js"></script>
+<script src="js/mermaid.min.js"></script>
+<style>
+/* ── Reset & Base ──────────────────────────────────────────── */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0d0f14;
+  color: #e2e8f0;
+  font-family: "Pretendard","Malgun Gothic","Apple SD Gothic Neo","Noto Sans CJK KR",sans-serif;
+  font-size: 13px;
+  padding: 12px;
+  overflow-x: hidden;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #0d0f14; }
+::-webkit-scrollbar-thumb { background: #2a3045; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+/* ── Entry meta header ────────────────────────────────────── */
+.entry-meta { color:#94a3b8; font-size:11px; margin-bottom:8px; }
+.entry-meta b.nb-name { color:#60a5fa; }
+.entry-meta .mode-rag { color:#86efac; }
+.entry-meta .mode-force { color:#fbbf24; }
+.source-chips { margin: 4px 0 0; }
+.source-chip {
+  display:inline-block; background:#1e3a5f; border:1px solid #1d4ed8;
+  color:#60a5fa; padding:1px 6px; border-radius:3px; font-size:10px;
+  margin-right:6px; margin-top:4px;
+}
+.source-empty { color:#64748b; font-size:11px; }
+
+/* ── Question / Answer blocks ─────────────────────────────── */
+.entry-question-label { color:#fde68a; font-weight:600; margin-top:8px; }
+.entry-question {
+  background:#161922; border-left:3px solid #4f8ef7; padding:6px 10px;
+  margin:4px 0 12px; border-radius:0 4px 4px 0;
+}
+.entry-answer-label  { color:#86efac; font-weight:600; }
+.entry-answer {
+  background:#161922; border-left:3px solid #34d399; padding:6px 10px;
+  margin-top:4px; border-radius:0 4px 4px 0;
+}
+.entry-question .card-body, .entry-answer .card-body { line-height: 1.7; }
+.answer-empty { color:#64748b; font-style: italic; font-size: 12px; }
+
+/* ── Markdown content (chat.html과 동일) ──────────────────── */
+.card-body p { margin: 0.4em 0; }
+.card-body pre {
+  position: relative;
+  background: #0a0e17;
+  border-left: 3px solid #f97316;
+  border-radius: 0 4px 4px 0;
+  padding: 8px;
+  overflow-x: auto;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0.5em 0;
+}
+.card-body pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  font-size: 11px;
+}
+.card-body code {
+  font-family: "JetBrains Mono",Consolas,monospace;
+}
+.card-body :not(pre) > code {
+  background: #0d1117;
+  color: #f97316;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.card-body table { border-collapse: collapse; margin: 0.5em 0; width: 100%; }
+.card-body th, .card-body td {
+  border: 1px solid #2a3045;
+  padding: 4px 8px;
+  font-size: 12px;
+  text-align: left;
+}
+.card-body th { background: #1e2330; color: #94a3b8; font-weight: 600; }
+.card-body h1, .card-body h2, .card-body h3, .card-body h4, .card-body h5, .card-body h6 {
+  color: #60a5fa;
+  margin: 0.6em 0 0.3em;
+}
+.card-body h1 { font-size: 1.3em; }
+.card-body h2 { font-size: 1.15em; }
+.card-body h3 { font-size: 1.05em; }
+.card-body ul, .card-body ol { padding-left: 1.5em; margin: 0.3em 0; }
+.card-body li { margin: 0.15em 0; }
+.card-body hr { border: none; border-top: 1px solid #2a3045; margin: 0.6em 0; }
+.card-body blockquote {
+  border-left: 3px solid #a78bfa;
+  padding-left: 10px;
+  color: #94a3b8;
+  margin: 0.4em 0;
+}
+.card-body a { color: #60a5fa; text-decoration: none; }
+.card-body a:hover { text-decoration: underline; }
+.card-body strong { color: #f1f5f9; }
+.card-body img { max-width: 100%; border-radius: 4px; }
+
+/* ── Highlight.js dark theme (Atom One Dark inspired) ──────── */
+.hljs { color: #abb2bf; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-link { color: #c678dd; }
+.hljs-function .hljs-keyword { color: #c678dd; }
+.hljs-string, .hljs-addition { color: #98c379; }
+.hljs-number, .hljs-attr { color: #d19a66; }
+.hljs-comment, .hljs-quote, .hljs-deletion { color: #5c6370; font-style: italic; }
+.hljs-title, .hljs-title.function_ { color: #61afef; }
+.hljs-built_in, .hljs-type { color: #e5c07b; }
+.hljs-variable, .hljs-template-variable { color: #e06c75; }
+.hljs-name, .hljs-selector-id, .hljs-selector-class { color: #e06c75; }
+.hljs-meta { color: #61afef; }
+.hljs-params { color: #abb2bf; }
+.hljs-subst { color: #e06c75; }
+.hljs-regexp { color: #98c379; }
+.hljs-symbol { color: #56b6c2; }
+.hljs-doctag { color: #c678dd; }
+
+/* ── KaTeX 다크 테마 ───────────────────────────────────────── */
+.katex { color: #e2e8f0; font-size: 1.1em; }
+.katex-display { margin: 0.6em 0; overflow-x: auto; }
+
+/* ── Mermaid diagrams ─────────────────────────────────────── */
+.mermaid-wrapper {
+  background: #111827;
+  border: 1px solid #2a3045;
+  border-radius: 4px;
+  padding: 12px;
+  margin: 0.5em 0;
+  overflow-x: auto;
+  text-align: center;
+}
+.mermaid-wrapper svg { max-width: 100%; height: auto; }
+.mermaid-error {
+  color: #f87171;
+  font-size: 11px;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  padding: 4px;
+}
+
+/* ── Placeholder ──────────────────────────────────────────── */
+.placeholder {
+  color: #64748b;
+  font-size: 12px;
+  text-align: center;
+  padding: 40px 20px;
+}
+</style>
+</head>
+<body>
+<div id="root"><div class="placeholder">항목을 선택하세요</div></div>
+
+<script>
+// ── Mermaid 초기화 ────────────────────────────────────────────
+if (window.mermaid) {
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    securityLevel: 'loose',
+    fontFamily: '"Pretendard","Malgun Gothic",sans-serif',
+    fontSize: 13,
+    suppressErrorRendering: true
+  });
+
+  function _isMermaidErrorSvg(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.tagName !== 'svg' && node.tagName !== 'SVG') return false;
+    var html = node.outerHTML || '';
+    return html.indexOf('Syntax error') !== -1 ||
+           html.indexOf('aria-roledescription="error"') !== -1;
+  }
+  var _mermaidObserver = new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      m.addedNodes.forEach(function(node) {
+        if (_isMermaidErrorSvg(node)) {
+          var wrapper = node.closest && node.closest('.mermaid-wrapper');
+          if (wrapper) wrapper.style.display = 'none';
+          else node.remove();
+        }
+      });
+    });
+  });
+  _mermaidObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+// ── KaTeX 수학 확장 (marked.js 플러그인) ─────────────────────
+function _katexRender(text, displayMode) {
+  if (!window.katex) return null;
+  try { return katex.renderToString(text, { displayMode: displayMode, throwOnError: false }); }
+  catch(e) { return null; }
+}
+
+const mathExtension = {
+  extensions: [
+    {
+      name: 'displayMath',
+      level: 'block',
+      start(src) { return src.indexOf('$$'); },
+      tokenizer(src) {
+        const m = src.match(/^\$\$([\s\S]*?)\$\$/);
+        if (m) return { type: 'displayMath', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) {
+        return _katexRender(token.text, true) || '<span>' + token.raw + '</span>';
+      }
+    },
+    {
+      name: 'displayMathBracket',
+      level: 'block',
+      start(src) { return src.indexOf('\\['); },
+      tokenizer(src) {
+        const m = src.match(/^\\\[([\s\S]*?)\\\]/);
+        if (m) return { type: 'displayMathBracket', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) {
+        return _katexRender(token.text, true) || '<span>' + token.raw + '</span>';
+      }
+    },
+    {
+      name: 'inlineMath',
+      level: 'inline',
+      start(src) { return src.indexOf('$'); },
+      tokenizer(src) {
+        const m = src.match(/^\$((?:[^$\\\n]|\\.)+?)\$/);
+        if (m) return { type: 'inlineMath', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) {
+        return _katexRender(token.text, false) || '<span>' + token.raw + '</span>';
+      }
+    },
+    {
+      name: 'inlineMathParen',
+      level: 'inline',
+      start(src) { return src.indexOf('\\('); },
+      tokenizer(src) {
+        const m = src.match(/^\\\(((?:[^\\]|\\.)*?)\\\)/);
+        if (m) return { type: 'inlineMathParen', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) {
+        return _katexRender(token.text, false) || '<span>' + token.raw + '</span>';
+      }
+    }
+  ]
+};
+marked.use(mathExtension);
+
+// ── Mermaid code fence 인터셉트 ───────────────────────────────
+const mermaidExtension = {
+  renderer: {
+    code(token) {
+      if (token.lang === 'mermaid') {
+        const escaped = (token.text || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+        return '<div class="mermaid-wrapper"><div class="mermaid">' + escaped + '</div></div>';
+      }
+      return false;
+    }
+  }
+};
+marked.use(mermaidExtension);
+
+// ── Mermaid 다이어그램 렌더링 ─────────────────────────────────
+function renderMermaid(root) {
+  if (!window.mermaid) return;
+  var nodes = root.querySelectorAll('.mermaid:not([data-processed])');
+  if (!nodes.length) return;
+  nodes.forEach(function(el) {
+    var code = el.textContent;
+    var id = 'mermaid-' + Math.random().toString(36).slice(2);
+    el.setAttribute('data-processed', 'true');
+
+    function hideWrapper() {
+      var wrapper = el.closest('.mermaid-wrapper');
+      if (wrapper) wrapper.style.display = 'none';
+    }
+
+    var parsePromise;
+    try {
+      parsePromise = mermaid.parse(code, { suppressErrors: true });
+    } catch (e) {
+      hideWrapper();
+      return;
+    }
+    Promise.resolve(parsePromise).then(function(parseResult) {
+      if (parseResult === false || parseResult === null || parseResult === undefined) {
+        hideWrapper();
+        return null;
+      }
+      return mermaid.render(id, code);
+    }).then(function(result) {
+      if (!result || !result.svg) return;
+      if (result.svg.indexOf('Syntax error') !== -1 ||
+          result.svg.indexOf('aria-roledescription="error"') !== -1) {
+        hideWrapper();
+        return;
+      }
+      el.innerHTML = result.svg;
+    }).catch(function(err) {
+      hideWrapper();
+    });
+  });
+}
+
+// ── marked.js 설정 ────────────────────────────────────────────
+marked.setOptions({
+  highlight: function(code, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      try { return hljs.highlight(code, { language: lang }).value; }
+      catch(e) {}
+    }
+    try { return hljs.highlightAuto(code).value; }
+    catch(e) {}
+    return code;
+  },
+  breaks: true,
+  gfm: true
+});
+
+var root = document.getElementById('root');
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function renderMarkdownInto(el, md) {
+  var text = md == null ? '' : String(md);
+  if (!text.trim()) {
+    el.innerHTML = '';
+    return false;
+  }
+  el.innerHTML = marked.parse(text);
+  el.querySelectorAll('pre code:not(.hljs)').forEach(function(codeEl) {
+    try { hljs.highlightElement(codeEl); } catch(e) {}
+  });
+  renderMermaid(el);
+  return true;
+}
+
+function buildMetaHtml(payload) {
+  var ts = escapeHtml(payload.ts || '');
+  if (payload.kind === 'notebook') {
+    var nb = escapeHtml(payload.notebook || '');
+    var cells = Array.isArray(payload.cells) ? payload.cells : [];
+    var cellsStr = cells.length
+      ? cells.map(function(c) { return '#' + escapeHtml(c); }).join(', ')
+      : '(없음)';
+    return '<div class="entry-meta">' +
+      '📓 <b class="nb-name">' + nb + '</b> · ' +
+      '🕒 ' + ts + ' · ' +
+      '셀: ' + cellsStr +
+      '</div>';
+  }
+  // chat
+  var mode = (payload.mode || 'rag').toLowerCase();
+  var modeHtml = mode === 'force'
+    ? '<span class="mode-force">🔍 Force Mode</span>'
+    : '<span class="mode-rag">🤖 RAG</span>';
+  var sources = Array.isArray(payload.sources) ? payload.sources : [];
+  var chipsHtml;
+  if (sources.length) {
+    chipsHtml = sources.map(function(s) {
+      return '<span class="source-chip">📓 ' + escapeHtml(s) + '</span>';
+    }).join('');
+  } else {
+    chipsHtml = '<span class="source-empty">(출처 없음)</span>';
+  }
+  return '<div class="entry-meta">' +
+    '🕒 ' + ts + ' · ' + modeHtml +
+    '<div class="source-chips">' + chipsHtml + '</div>' +
+    '</div>';
+}
+
+// ── Public API (Python에서 runJavaScript로 호출) ──────────────
+
+function renderEntry(payload) {
+  if (!payload) { clearViewer(); return; }
+  root.innerHTML = '';
+
+  // Meta
+  var metaWrap = document.createElement('div');
+  metaWrap.innerHTML = buildMetaHtml(payload);
+  // unwrap single child (we built outer .entry-meta already)
+  while (metaWrap.firstChild) root.appendChild(metaWrap.firstChild);
+
+  // Question
+  var qLabel = document.createElement('div');
+  qLabel.className = 'entry-question-label';
+  qLabel.textContent = '💬 질문';
+  root.appendChild(qLabel);
+
+  var qWrap = document.createElement('div');
+  qWrap.className = 'entry-question';
+  var qBody = document.createElement('div');
+  qBody.className = 'card-body';
+  var hasQ = renderMarkdownInto(qBody, payload.question);
+  if (!hasQ) {
+    qBody.innerHTML = '<span class="answer-empty">(질문 없음)</span>';
+  }
+  qWrap.appendChild(qBody);
+  root.appendChild(qWrap);
+
+  // Answer
+  var aLabel = document.createElement('div');
+  aLabel.className = 'entry-answer-label';
+  aLabel.textContent = '🤖 답변';
+  root.appendChild(aLabel);
+
+  var aWrap = document.createElement('div');
+  aWrap.className = 'entry-answer';
+  var aBody = document.createElement('div');
+  aBody.className = 'card-body';
+  var hasA = renderMarkdownInto(aBody, payload.answer);
+  if (!hasA) {
+    aBody.innerHTML = '<span class="answer-empty">(빈 답변)</span>';
+  }
+  aWrap.appendChild(aBody);
+  root.appendChild(aWrap);
+}
+
+function clearViewer() {
+  root.innerHTML = '<div class="placeholder">항목을 선택하세요</div>';
+}
+</script>
+</body>
+</html>

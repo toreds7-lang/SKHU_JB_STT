@@ -112,40 +112,36 @@ class ConfigPanel(QWidget):
         lay.addLayout(dir_row)
         self.nb_dir_edit.textChanged.connect(self._sync_cache_dir)
 
+        lay.addWidget(_FieldLabel("캐시 디렉토리"))
+        self.cache_dir_edit = QLineEdit(".rag_cache")
+        lay.addWidget(self.cache_dir_edit)
+
         # ── LLM 설정 ──────────────────────────────────────────────────────────
         lay.addWidget(_SectionLabel("🤖  LLM 설정"))
-        lay.addWidget(_FieldLabel("Base URL"))
         self.llm_url_edit = QLineEdit()
         self.llm_url_edit.setPlaceholderText("http://localhost:8000/v1 (비워두면 OpenAI)")
-        lay.addWidget(self.llm_url_edit)
 
         lay.addWidget(_FieldLabel("모델명"))
         self.llm_model_edit = QLineEdit()
         self.llm_model_edit.setPlaceholderText("gpt-4o-mini")
         lay.addWidget(self.llm_model_edit)
 
-        lay.addWidget(_FieldLabel("LLM API Key"))
         self.llm_key_edit = QLineEdit()
         self.llm_key_edit.setPlaceholderText("sk-… or dummy")
         self.llm_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        lay.addWidget(self.llm_key_edit)
 
         # ── Embedding 설정 ────────────────────────────────────────────────────
         lay.addWidget(_SectionLabel("🔢  Embedding 설정"))
-        lay.addWidget(_FieldLabel("Embedding Base URL (옵션)"))
         self.emb_url_edit = QLineEdit()
         self.emb_url_edit.setPlaceholderText("http://localhost:8001/v1")
-        lay.addWidget(self.emb_url_edit)
 
         lay.addWidget(_FieldLabel("Embedding 모델명"))
         self.emb_model_edit = QLineEdit("text-embedding-ada-002")
         lay.addWidget(self.emb_model_edit)
 
-        lay.addWidget(_FieldLabel("OpenAI API Key"))
         self.emb_key_edit = QLineEdit()
         self.emb_key_edit.setPlaceholderText("sk-…")
         self.emb_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        lay.addWidget(self.emb_key_edit)
 
         # ── 검색 모드 ──────────────────────────────────────────────────────────
         lay.addWidget(_SectionLabel("🔍  검색 모드"))
@@ -167,10 +163,13 @@ class ConfigPanel(QWidget):
         )
         lay.addWidget(self.force_workers_spin)
 
-        # ── 캐시 디렉토리 ─────────────────────────────────────────────────────
-        lay.addWidget(_FieldLabel("캐시 디렉토리"))
-        self.cache_dir_edit = QLineEdit(".rag_cache")
-        lay.addWidget(self.cache_dir_edit)
+        # ── STT 설정 ──────────────────────────────────────────────────────────
+        lay.addWidget(_SectionLabel("🎤  STT"))
+        lay.addWidget(_FieldLabel("언어"))
+        self.stt_language_combo = QComboBox()
+        self.stt_language_combo.addItem("한국어  (Korean + English)", "ko")
+        self.stt_language_combo.addItem("English", "en")
+        lay.addWidget(self.stt_language_combo)
 
         lay.addWidget(self._divider())
 
@@ -276,6 +275,7 @@ class ConfigPanel(QWidget):
             "retrieval_mode": self.retrieval_combo.currentData(),
             "cache_dir":     self.cache_dir_edit.text().strip() or ".rag_cache",
             "force_workers": self.force_workers_spin.value(),
+            "stt_language":  self.stt_language_combo.currentData(),
         }
 
     def set_build_enabled(self, enabled: bool):
@@ -323,6 +323,10 @@ class ConfigPanel(QWidget):
         # Force Mode 병렬 워커 수 (QSettings → env.txt → 기본값 3)
         fw_default = int(os.getenv("FORCE_WORKERS", "3"))
         self.force_workers_spin.setValue(int(s.value("force_workers", fw_default)))
+        # STT 언어 (QSettings → 기본값 ko)
+        stt_idx = self.stt_language_combo.findData(s.value("stt_language", "ko"))
+        if stt_idx >= 0:
+            self.stt_language_combo.setCurrentIndex(stt_idx)
         # API 키는 env에서만 로드 (저장 안 함)
         self.llm_key_edit.setText(os.getenv("OPENAI_API_KEY", ""))
         self.emb_key_edit.setText(os.getenv("OPENAI_API_KEY", ""))
@@ -337,4 +341,5 @@ class ConfigPanel(QWidget):
         s.setValue("cache_dir",      self.cache_dir_edit.text())
         s.setValue("retrieval_mode", self.retrieval_combo.currentData())
         s.setValue("force_workers",  self.force_workers_spin.value())
+        s.setValue("stt_language",   self.stt_language_combo.currentData())
         save_env_models(self.llm_model_edit.text(), self.emb_model_edit.text())

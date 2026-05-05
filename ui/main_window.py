@@ -21,6 +21,7 @@ from ui.docs_tab       import DocsTab
 from ui.graph_tab      import GraphTab
 from ui.notebook_tab   import NotebookTab
 from ui.dir_tab        import DirTab
+from ui.cached_responses_tab import CachedResponsesTab
 from workers.llm_worker import (
     RagBuildWorker, LLMWorker, ForceWorker,
     ExampleQuestionsWorker, SuggestedQueriesWorker, SummaryWorker,
@@ -57,6 +58,7 @@ class MainWindow(QMainWindow):
         self._last_config:    dict = {}
         self._init_ui()
         self._connect_signals()
+        self._propagate_stt_language(self.config_panel.get_config().get("stt_language", "ko"))
 
     def _init_ui(self):
         self.setWindowTitle("SKHU Agent V1.0   박종범 강사(jongbum3.park@sk.com)")
@@ -97,12 +99,14 @@ class MainWindow(QMainWindow):
         self.graph_tab    = GraphTab()
         self.notebook_tab = NotebookTab()
         self.dir_tab      = DirTab()
+        self.cached_tab   = CachedResponsesTab()
 
         self.tab_widget.addTab(self.notebook_tab, "📓  노트북 뷰어")
         self.tab_widget.addTab(self.chat_tab,     "💬  채팅")
         self.tab_widget.addTab(self.docs_tab,     "📄  문서 탐색")
         self.tab_widget.addTab(self.graph_tab,    "🕸️  그래프 탐색")
         self.tab_widget.addTab(self.dir_tab,      "📁  디렉토리")
+        self.tab_widget.addTab(self.cached_tab,   "💾  캐시 응답")
 
         self.tab_widget.tabBar().setTabVisible(2, False)  # 문서 탐색
         self.tab_widget.tabBar().setTabVisible(3, False)  # 그래프 탐색
@@ -132,6 +136,19 @@ class MainWindow(QMainWindow):
         self.notebook_tab.stop_requested.connect(self._on_summary_stop)
         self.notebook_tab.notebook_chat_requested.connect(self._on_notebook_chat)
         self.notebook_tab.notebook_chat_stop.connect(self._on_notebook_chat_stop)
+        self.config_panel.stt_language_combo.currentIndexChanged.connect(
+            lambda: self._propagate_stt_language(self.config_panel.stt_language_combo.currentData())
+        )
+
+        # 캐시 응답 동기화 (실시간)
+        self.notebook_tab.cache_updated.connect(self.cached_tab.refresh)
+        self.chat_tab.cache_updated.connect(self.cached_tab.refresh)
+        self.cached_tab.entry_deleted.connect(self.notebook_tab.on_cache_entry_deleted)
+        self.cached_tab.entry_deleted.connect(self.chat_tab.on_cache_entry_deleted)
+
+    def _propagate_stt_language(self, language: str):
+        self.chat_tab.set_stt_language(language)
+        self.notebook_tab.set_stt_language(language)
 
     # ── RAG 빌드 ─────────────────────────────────────────────────────────────
 
@@ -190,6 +207,9 @@ class MainWindow(QMainWindow):
         self.config_panel.update_stats(rag_sys)
         self.config_panel.mark_rag_ready()
         self.docs_tab.load_cells(rag_sys["cells"])
+        # 캐시 디렉토리 전파 (notebook_tab은 set_cache_dir() 별도, chat/cached는 새로 추가)
+        self.chat_tab.set_cache_dir(cfg["cache_dir"])
+        self.cached_tab.set_cache_dir(cfg["cache_dir"])
         self.graph_tab.load_graph(rag_sys["graph"])
         self.notebook_tab.set_cache_dir(cfg["cache_dir"])
         self.notebook_tab.load_cells(rag_sys["cells"])
@@ -420,7 +440,9 @@ class MainWindow(QMainWindow):
         # 실행 중인 워커 정리
         for worker in [self._rag_worker, self._llm_worker, self._force_worker,
                        self._eq_worker, self._sq_worker, self._summary_worker,
-                       self._nb_chat_worker]:
+                       self._nb_chat_worker,
+                       self.chat_tab._recorder, self.chat_tab._stt_worker,
+                       self.notebook_tab._recorder, self.notebook_tab._stt_worker]:
             if worker and worker.isRunning():
                 worker.quit()
                 worker.wait(2000)

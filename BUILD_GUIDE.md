@@ -8,7 +8,7 @@
 ### 의존성 설치
 
 ```bash
-pip install -r requirements_qt.txt
+pip install -r requirements_1.txt
 pip install pyinstaller>=6.8.0
 ```
 
@@ -23,7 +23,7 @@ python -c "from PIL import Image; Image.open('SK_Hynix.png').save('SK_Hynix.ico'
 ## 3. 빌드 실행
 
 ```bash
-cd d:\2026_Agent\SKHU_Agent
+cd d:\2026_Agent_STT\SKHU_Agent
 pyinstaller build.spec --noconfirm
 ```
 

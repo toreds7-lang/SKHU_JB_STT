@@ -5,6 +5,7 @@ RAG Core 비즈니스 로직
 """
 
 import os
+import sys
 import json
 import re
 import glob
@@ -82,9 +83,86 @@ def _is_trace_debug() -> bool:
 
 
 # ── 한국어 형태소 분석 ────────────────────────────────────────────────────────
+def _path_is_ascii(p: str) -> bool:
+    try:
+        p.encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _try_short_path(p: str) -> str:
+    """Windows 8.3 단축경로 시도. 8dot3name 비활성화 등으로 실패하면 원본 반환."""
+    if sys.platform != "win32":
+        return p
+    try:
+        import ctypes
+        from ctypes import wintypes
+        GetShortPathNameW = ctypes.windll.kernel32.GetShortPathNameW
+        GetShortPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        GetShortPathNameW.restype = wintypes.DWORD
+        buf = ctypes.create_unicode_buffer(32768)
+        if GetShortPathNameW(p, buf, 32768) and buf.value and _path_is_ascii(buf.value):
+            return buf.value
+    except Exception:
+        pass
+    return p
+
+
+def _kiwi_model_path() -> str | None:
+    """kiwi 모델 디렉토리를 ASCII 경로로 반환.
+
+    Why: kiwipiepy 의 네이티브 C++ 로더가 비-ASCII 경로의 .mdl 파일을 열지 못해
+    'Cannot open extract.mdl for WordDetector' 가 발생한다 (한글 사용자명/폴더명).
+    1) 원본 경로가 ASCII 면 그대로 사용.
+    2) 아니면 Windows 8.3 단축경로(ASCII) 시도.
+    3) 그래도 안되면 모델 파일들을 보장된 ASCII 위치(C:\\Users\\Public\\...)로 복사 후 그 경로 반환.
+    """
+    try:
+        if getattr(sys, "frozen", False):
+            base = os.path.join(sys._MEIPASS, "kiwipiepy_model")
+        else:
+            try:
+                import kiwipiepy_model as _kpm
+                base = _kpm.get_model_path() if hasattr(_kpm, "get_model_path") \
+                    else os.path.dirname(_kpm.__file__)
+            except ImportError:
+                import kiwipiepy as _kp
+                base = os.path.dirname(_kp.__file__)
+        if not os.path.isdir(base):
+            return None
+        if _path_is_ascii(base):
+            return base
+        short = _try_short_path(base)
+        if _path_is_ascii(short) and os.path.isdir(short):
+            return short
+        # Fallback: ASCII 보장 위치로 모델 복사
+        public = os.environ.get("PUBLIC") or r"C:\Users\Public"
+        target = os.path.join(public, "SKHU_Agent", "kiwipiepy_model")
+        if not _path_is_ascii(target):
+            target = r"C:\SKHU_Agent\kiwipiepy_model"
+        marker = os.path.join(target, ".copied_ok")
+        if not os.path.isfile(marker):
+            import shutil
+            os.makedirs(target, exist_ok=True)
+            for name in os.listdir(base):
+                src = os.path.join(base, name)
+                dst = os.path.join(target, name)
+                if os.path.isfile(src):
+                    shutil.copy2(src, dst)
+                elif os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+            with open(marker, "w") as fh:
+                fh.write("ok")
+        return target
+    except Exception:
+        return None
+
+
 try:
     from kiwipiepy import Kiwi
-    _kiwi = Kiwi()
+    _kiwi_mp = _kiwi_model_path()
+    _kiwi = Kiwi(model_path=_kiwi_mp) if _kiwi_mp else Kiwi()
 
     def korean_tokenize(text: str) -> list[str]:
         """kiwipiepy 기반 한국어 형태소 분석 토크나이저."""

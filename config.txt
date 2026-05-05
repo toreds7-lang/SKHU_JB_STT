@@ -36,3 +36,7 @@ LLM_TEMPERATURE=0.2
 # ── Debug / Trace ───────────────────────────────────────────
 # true로 설정하면 각 쿼리마다 retriever별 검색 결과를 trace_logs/ 폴더에 저장
 TRACE_DEBUG=false
+
+# ── STT (Speech-to-Text) ────────────────────────────────────
+# Whisper 모델 크기: small 또는 medium
+STT_MODEL=small

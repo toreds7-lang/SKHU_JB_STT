@@ -214,6 +214,8 @@ body {
 }
 .action-btn:hover { background: #3a4055; color: #e2e8f0; }
 .action-btn.copied { color: #4ade80; border-color: #4ade80; }
+.action-btn.cached { color: #fbbf24; border-color: #fbbf24; background: #2d2410; }
+.action-btn.cached:hover { background: #3d3220; }
 
 /* ── Streaming cursor (pure CSS animation) ─────────────────── */
 .cursor {
@@ -462,8 +464,8 @@ function renderMermaid(root) {
   });
 }
 
-// ── AI 메시지 액션 버튼 (MD 복사) ─────────────────────────────
-function addMsgActions(bubbleDiv, rawMarkdown) {
+// ── AI 메시지 액션 버튼 (MD 복사 + 캐시 저장) ─────────────────
+function addMsgActions(bubbleDiv, rawMarkdown, messageId, alreadyCached) {
   var label = bubbleDiv.querySelector('.msg-label');
   if (!label) return;
   if (label.querySelector('.msg-actions')) return;
@@ -502,7 +504,56 @@ function addMsgActions(bubbleDiv, rawMarkdown) {
 
   actions.appendChild(mdBtn);
   actions.appendChild(txtBtn);
+
+  // 💾 캐시 저장 (messageId가 있을 때만)
+  if (messageId) {
+    bubbleDiv.setAttribute('data-msg-id', messageId);
+    var cacheBtn = document.createElement('button');
+    cacheBtn.className = 'action-btn cache-btn';
+    var setIdle = function() {
+      cacheBtn.textContent = 'save';
+      cacheBtn.classList.remove('cached');
+      cacheBtn.dataset.cached = '0';
+      cacheBtn.title = '이 AI 응답을 캐시에 저장';
+    };
+    var setSaved = function() {
+      cacheBtn.textContent = '✓ saved';
+      cacheBtn.classList.add('cached');
+      cacheBtn.dataset.cached = '1';
+      cacheBtn.title = '캐시에 저장됨 — 다시 클릭시 제거';
+    };
+    if (alreadyCached) { setSaved(); } else { setIdle(); }
+    cacheBtn.addEventListener('click', function() {
+      if (cacheBtn.dataset.cached === '1') {
+        console.log('__UNSAVE_CHAT__:' + messageId);
+        setIdle();
+      } else {
+        console.log('__SAVE_CHAT__:' + messageId);
+        setSaved();
+      }
+    });
+    actions.appendChild(cacheBtn);
+  }
+
   label.appendChild(actions);
+}
+
+/** Python에서 호출: 특정 메시지의 저장 버튼 상태를 갱신. */
+function markCached(messageId, isCached) {
+  if (!messageId) return;
+  var bubble = document.querySelector('.bubble-ai[data-msg-id="' + messageId + '"]');
+  if (!bubble) return;
+  var btn = bubble.querySelector('.cache-btn');
+  if (!btn) return;
+  if (isCached) {
+    btn.textContent = '✓ saved';
+    btn.classList.add('cached');
+    btn.dataset.cached = '1';
+  } else {
+    btn.textContent = 'save';
+    btn.classList.remove('cached');
+    btn.dataset.cached = '0';
+  }
 }
 
 // ── Public API (Python에서 runJavaScript로 호출) ──────────────
@@ -569,7 +620,7 @@ function renderStreamingBuffer() {
 }
 
 /** 스트리밍 완료 — 최종 렌더링 (커서 제거) */
-function finishAiMessage() {
+function finishAiMessage(messageId) {
   if (!currentAiBubble) return;
   var rawMd = streamingBuffer;
   var bubbleDiv = currentAiBubble.closest('.bubble-ai');
@@ -579,7 +630,7 @@ function finishAiMessage() {
   });
   addCopyButtons(currentAiBubble);
   renderMermaid(currentAiBubble);
-  if (bubbleDiv) addMsgActions(bubbleDiv, rawMd);
+  if (bubbleDiv) addMsgActions(bubbleDiv, rawMd, messageId, false);
   currentAiBubble.removeAttribute('id');
   currentAiBubble = null;
   streamingBuffer = '';
@@ -588,7 +639,7 @@ function finishAiMessage() {
 }
 
 /** 히스토리 복원용 — 완성된 AI 메시지 추가 */
-function appendFinishedAiMessage(text) {
+function appendFinishedAiMessage(text, messageId, alreadyCached) {
   const msg = document.createElement('div');
   msg.className = 'msg msg-ai';
   const rendered = marked.parse(text);
@@ -604,7 +655,7 @@ function appendFinishedAiMessage(text) {
   addCopyButtons(msg);
   renderMermaid(msg);
   var bubbleDiv = msg.querySelector('.bubble-ai');
-  if (bubbleDiv) addMsgActions(bubbleDiv, text);
+  if (bubbleDiv) addMsgActions(bubbleDiv, text, messageId, !!alreadyCached);
   trimMessages();
   scrollToBottom(true);
 }

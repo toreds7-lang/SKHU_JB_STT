@@ -24,3 +24,16 @@ trace_logs/
 # IDE
 .vscode/
 .idea/
+
+# Model files (keep folder, exclude contents)
+models/*
+!models/.gitkeep
+copy_to_dist/models/*
+!copy_to_dist/models/.gitkeep
+
+# Misc
+.rag_cache*/
+work - */
+work_3/
+stt_debug.log
+crash.log

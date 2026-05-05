@@ -8,6 +8,7 @@ NotebookTab - 노트북 뷰어 + 셀 채팅 + 요약 탭
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -18,8 +19,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QFileSystemWatcher
 from PyQt6.QtGui import QFont, QColor, QKeySequence, QShortcut, QDesktopServices
+from ui.stt_button import STTButton
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage
+
+from cache_store import NotebookChatCache
 
 
 # ── 스타일 상수 ──────────────────────────────────────────────────────────────
@@ -145,6 +149,37 @@ class _LinkPage(QWebEnginePage):
             QApplication.clipboard().setText(message[len("__COPY__:"):])
 
 
+class _ViewerLinkPage(_LinkPage):
+    """노트북 뷰어 전용 — 셀 선택 변경 알림(__SEL_CHANGED__)을 NotebookTab으로 전달."""
+
+    def __init__(self, tab, parent=None):
+        super().__init__(parent)
+        self._tab = tab
+
+    def javaScriptConsoleMessage(self, level, message, line, source):
+        if message == "__SEL_CHANGED__":
+            self._tab._on_viewer_selection_changed()
+            return
+        super().javaScriptConsoleMessage(level, message, line, source)
+
+
+class _ChatLinkPage(_LinkPage):
+    """채팅 웹뷰 전용 — __SAVE_NB__/__UNSAVE_NB__ 콘솔 메시지를 NotebookTab으로 전달."""
+
+    def __init__(self, tab, parent=None):
+        super().__init__(parent)
+        self._tab = tab
+
+    def javaScriptConsoleMessage(self, level, message, line, source):
+        if message.startswith("__SAVE_NB__:"):
+            self._tab._handle_save_request(message[len("__SAVE_NB__:"):])
+            return
+        if message.startswith("__UNSAVE_NB__:"):
+            self._tab._handle_unsave_request(message[len("__UNSAVE_NB__:"):])
+            return
+        super().javaScriptConsoleMessage(level, message, line, source)
+
+
 # ── 자동 확장 텍스트 입력 (ChatTab과 동일 패턴) ──────────────────────────────
 
 class _AutoExpandingEdit(QPlainTextEdit):
@@ -229,6 +264,7 @@ class NotebookTab(QWidget):
     notebook_chat_requested  = pyqtSignal(str, list, str, str, list)
     # (question, selected_cells, notebook_name, summary, conversation_history)
     notebook_chat_stop       = pyqtSignal()
+    cache_updated            = pyqtSignal()       # 캐시 저장/삭제 시 emit (CachedResponsesTab refresh용)
 
     def __init__(self):
         super().__init__()
@@ -245,12 +281,19 @@ class NotebookTab(QWidget):
         self._summary_view_dirty = False
         self._viewer_page_ready = False
         self._chat_page_ready = False
+        self._selection_mode = False
         self._is_streaming = False
         self._chat_history: list[dict] = []     # [{role, content}]
         self._pending_chat_question: str = ""   # 요약 자동생성 후 대기 중인 질문
         self._pending_chat_cells: list[dict] = []
         self._last_chat_question: str = ""      # 히스토리에 저장할 직전 질문
+        self._pending_nb_name: str = ""         # 진행 중인 채팅의 노트북 이름 (캐시 저장용)
+        self._pending_cell_indices: list = []   # 진행 중인 채팅의 선택 셀 (캐시 저장용)
+        self._recent_messages: dict = {}        # message_id → {nb, question, answer, cell_indices}
         self._context_mode: str = "summary"     # "summary" | "full"
+        self._stt_language = "ko"
+        self._recorder   = None
+        self._stt_worker = None
         self._build_ui()
         self._setup_prompt_watcher()
 
@@ -277,13 +320,21 @@ class NotebookTab(QWidget):
         left_layout.setContentsMargins(0, 0, 4, 0)
         left_layout.setSpacing(6)
 
+        select_all_row = QHBoxLayout()
+        select_all_row.setContentsMargins(0, 0, 0, 0)
+        select_all_row.setSpacing(6)
         self.select_all_cb = QCheckBox("전체선택")
         self.select_all_cb.setStyleSheet(
             "QCheckBox { color: #94a3b8; font-size: 11px; }"
             "QCheckBox::indicator { width: 14px; height: 14px; }"
         )
         self.select_all_cb.stateChanged.connect(self._on_select_all)
-        left_layout.addWidget(self.select_all_cb)
+        self.selected_count_label = QLabel("0개 선택")
+        self.selected_count_label.setStyleSheet("color: #64748b; font-size: 10px;")
+        select_all_row.addWidget(self.select_all_cb)
+        select_all_row.addWidget(self.selected_count_label)
+        select_all_row.addStretch()
+        left_layout.addLayout(select_all_row)
 
         legend = QLabel("🔵 요약 완료  🟡 이전 프롬프트")
         legend.setStyleSheet("color: #64748b; font-size: 10px;")
@@ -347,32 +398,35 @@ class NotebookTab(QWidget):
         self.outline_view_btn.setStyleSheet(_TOGGLE_ACTIVE)
         self.outline_view_btn.clicked.connect(lambda: self._switch_view(0))
 
-        self.cell_view_btn = QPushButton("셀 보기")
-        self.cell_view_btn.setStyleSheet(_TOGGLE_INACTIVE)
-        self.cell_view_btn.clicked.connect(lambda: self._switch_view(1))
-
         self.summary_view_btn = QPushButton("요약 보기")
         self.summary_view_btn.setStyleSheet(_TOGGLE_INACTIVE)
-        self.summary_view_btn.clicked.connect(lambda: self._switch_view(2))
+        self.summary_view_btn.clicked.connect(lambda: self._switch_view(1))
+
+        self.cell_view_btn = QPushButton("셀 보기")
+        self.cell_view_btn.setStyleSheet(_TOGGLE_INACTIVE)
+        self.cell_view_btn.clicked.connect(lambda: self._switch_view(2))
 
         toggle_row.addWidget(self.outline_view_btn)
-        toggle_row.addWidget(self.cell_view_btn)
         toggle_row.addWidget(self.summary_view_btn)
+        toggle_row.addWidget(self.cell_view_btn)
         toggle_row.addStretch()
+
+        self.selection_mode_btn = QPushButton("☑ 선택 모드")
+        self.selection_mode_btn.setStyleSheet(_TOGGLE_INACTIVE)
+        self.selection_mode_btn.setCheckable(True)
+        self.selection_mode_btn.clicked.connect(self._on_selection_mode_toggled)
+        toggle_row.addWidget(self.selection_mode_btn)
+
         right_layout.addLayout(toggle_row)
 
-        # 스택 위젯 (아웃라인 뷰 / 셀+채팅 뷰 / 요약 뷰)
+        # 스택 위젯 (아웃라인 뷰 / 요약 뷰 / 셀+채팅 뷰)
         self.view_stack = QStackedWidget()
 
         # --- [0] 아웃라인 뷰 ---
         self._build_outline_view()
         self.view_stack.addWidget(self.outline_tree)
 
-        # --- [1] 셀+채팅 뷰 (QSplitter) ---
-        self._build_cell_chat_view()
-        self.view_stack.addWidget(self._cell_chat_splitter)
-
-        # --- [2] 요약 보기 (기존) ---
+        # --- [1] 요약 보기 ---
         self.summary_web = QWebEngineView()
         self.summary_web.setPage(_LinkPage(self.summary_web))
         self.summary_web.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
@@ -384,6 +438,10 @@ class NotebookTab(QWidget):
         self.summary_web.setUrl(QUrl.fromLocalFile(str(html_path.resolve())))
         self.summary_web.loadFinished.connect(self._on_summary_page_loaded)
         self.view_stack.addWidget(self.summary_web)
+
+        # --- [2] 셀+채팅 뷰 (QSplitter) ---
+        self._build_cell_chat_view()
+        self.view_stack.addWidget(self._cell_chat_splitter)
 
         right_layout.addWidget(self.view_stack)
         splitter.addWidget(right_panel)
@@ -404,6 +462,11 @@ class NotebookTab(QWidget):
         self.outline_tree.setIndentation(16)
         self.outline_tree.setStyleSheet(_OUTLINE_TREE_STYLE)
         self.outline_tree.itemClicked.connect(self._on_outline_item_clicked)
+        self.outline_tree.itemChanged.connect(self._on_outline_item_check_changed)
+        self._suppress_outline_check = False
+        self._just_toggled_outline_check = False
+        self._outline_items: list[QTreeWidgetItem] = []
+        self._outline_max_idx: int = -1
         placeholder = QTreeWidgetItem(["노트북을 선택하세요."])
         placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
         self.outline_tree.addTopLevelItem(placeholder)
@@ -411,55 +474,172 @@ class NotebookTab(QWidget):
     def _render_outline(self, nb_name: str):
         """마크다운 셀에서 헤더를 파싱해 아웃라인 트리를 구성"""
         import re
-        self.outline_tree.clear()
-        nb_cells = sorted(
-            [c for c in self._cells if c["notebook"] == nb_name],
-            key=lambda x: x["cell_idx"]
-        )
-        header_re = re.compile(r'^(#{1,6})\s+(.+)', re.MULTILINE)
-        # (level, QTreeWidgetItem) 스택으로 계층 추적
-        stack: list[tuple[int, QTreeWidgetItem]] = []
+        self._suppress_outline_check = True
+        try:
+            self.outline_tree.clear()
+            self._outline_items = []
+            nb_cells = sorted(
+                [c for c in self._cells if c["notebook"] == nb_name],
+                key=lambda x: x["cell_idx"]
+            )
+            self._outline_max_idx = nb_cells[-1]["cell_idx"] if nb_cells else -1
+            header_re = re.compile(r'^(#{1,6})\s+(.+)', re.MULTILINE)
+            # (level, QTreeWidgetItem) 스택으로 계층 추적
+            stack: list[tuple[int, QTreeWidgetItem]] = []
 
-        level_colors = {1: "#93c5fd", 2: "#c4b5fd", 3: "#86efac",
-                        4: "#fde68a", 5: "#fca5a5", 6: "#94a3b8"}
+            level_colors = {1: "#93c5fd", 2: "#c4b5fd", 3: "#86efac",
+                            4: "#fde68a", 5: "#fca5a5", 6: "#94a3b8"}
 
-        for cell in nb_cells:
-            if cell["cell_type"] != "markdown":
-                continue
-            for m in header_re.finditer(cell["source"]):
-                level = len(m.group(1))
-                text = m.group(2).strip()
-                prefix = "#" * level + " "
-                item = QTreeWidgetItem([prefix + text])
-                item.setData(0, Qt.ItemDataRole.UserRole, cell["cell_idx"])
-                item.setToolTip(0, text)
-                color = level_colors.get(level, "#94a3b8")
-                item.setForeground(0, QColor(color))
+            # 1단계: 모든 헤더를 평면 리스트로 수집 (level, start_idx, item)
+            flat_headers: list[tuple[int, int, QTreeWidgetItem]] = []
 
-                while stack and stack[-1][0] >= level:
-                    stack.pop()
+            for cell in nb_cells:
+                if cell["cell_type"] != "markdown":
+                    continue
+                for m in header_re.finditer(cell["source"]):
+                    level = len(m.group(1))
+                    text = m.group(2).strip()
+                    prefix = "#" * level + " "
+                    item = QTreeWidgetItem([prefix + text])
+                    item.setData(0, Qt.ItemDataRole.UserRole, cell["cell_idx"])
+                    item.setToolTip(0, text)
+                    color = level_colors.get(level, "#94a3b8")
+                    item.setForeground(0, QColor(color))
+                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    item.setCheckState(0, Qt.CheckState.Unchecked)
 
-                if stack:
-                    stack[-1][1].addChild(item)
-                else:
-                    self.outline_tree.addTopLevelItem(item)
+                    while stack and stack[-1][0] >= level:
+                        stack.pop()
 
-                stack.append((level, item))
+                    if stack:
+                        stack[-1][1].addChild(item)
+                    else:
+                        self.outline_tree.addTopLevelItem(item)
 
-        self.outline_tree.expandAll()
+                    stack.append((level, item))
+                    flat_headers.append((level, cell["cell_idx"], item))
+                    self._outline_items.append(item)
 
-        if self.outline_tree.topLevelItemCount() == 0:
-            placeholder = QTreeWidgetItem(["(마크다운 헤더 없음)"])
-            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
-            self.outline_tree.addTopLevelItem(placeholder)
+            # 2단계: 각 헤더의 end_idx 계산 (다음 동급/상위 헤더 직전 셀까지)
+            n = len(flat_headers)
+            for i, (level, start_idx, item) in enumerate(flat_headers):
+                end_idx = self._outline_max_idx
+                for j in range(i + 1, n):
+                    nlevel, nstart, _ = flat_headers[j]
+                    if nlevel <= level:
+                        end_idx = nstart - 1
+                        break
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, end_idx)
+
+            self.outline_tree.expandAll()
+
+            if self.outline_tree.topLevelItemCount() == 0:
+                placeholder = QTreeWidgetItem(["(마크다운 헤더 없음)"])
+                placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+                self.outline_tree.addTopLevelItem(placeholder)
+        finally:
+            self._suppress_outline_check = False
+        self._apply_outline_selection_mode()
 
     def _on_outline_item_clicked(self, item: QTreeWidgetItem, col: int):
-        """아웃라인 항목 클릭 → 셀 보기로 전환 후 해당 셀로 스크롤"""
+        """아웃라인 항목 라벨 클릭 → 셀 보기로 전환 후 해당 셀로 스크롤.
+        체크박스 클릭은 itemChanged 직후 itemClicked가 따라오므로 플래그로 무시."""
+        if self._just_toggled_outline_check:
+            self._just_toggled_outline_check = False
+            return
         cell_idx = item.data(0, Qt.ItemDataRole.UserRole)
         if cell_idx is None:
             return
-        self._switch_view(1)
+        self._switch_view(2)
         self._run_viewer_js(f"scrollToCell({cell_idx})")
+
+    def _on_outline_item_check_changed(self, item: QTreeWidgetItem, col: int):
+        """아웃라인 체크박스 토글 → 해당 섹션 셀 일괄 선택/해제."""
+        if self._suppress_outline_check:
+            return
+        # 사용자가 체크박스를 직접 토글했음을 표시 → 뒤따르는 itemClicked의 스크롤 억제
+        self._just_toggled_outline_check = True
+        start = item.data(0, Qt.ItemDataRole.UserRole)
+        end = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        if start is None or end is None:
+            return
+        state = item.checkState(0)
+        # PartiallyChecked는 사용자가 직접 만들 수 없지만 안전하게 Checked로 처리
+        checked = state != Qt.CheckState.Unchecked
+        js_bool = "true" if checked else "false"
+        self._run_viewer_js(f"setRangeChecked({int(start)}, {int(end)}, {js_bool})")
+        # 셀 상태 변경 후 모든 아웃라인 트리스테이트 갱신
+        self._refresh_outline_check_states()
+
+    def _refresh_outline_check_states(self):
+        """뷰어 체크박스 현황을 읽어 각 아웃라인 항목의 트리스테이트를 갱신."""
+        if not self._outline_items or not self._selection_mode:
+            return
+        self._run_viewer_js("getAllCheckedIndices()", self._apply_outline_check_states)
+
+    def _apply_outline_check_states(self, result):
+        try:
+            checked_list = json.loads(result) if result else []
+        except (TypeError, ValueError):
+            checked_list = []
+        checked_set = set(int(x) for x in checked_list)
+        self._suppress_outline_check = True
+        try:
+            for item in self._outline_items:
+                start = item.data(0, Qt.ItemDataRole.UserRole)
+                end = item.data(0, Qt.ItemDataRole.UserRole + 1)
+                if start is None or end is None:
+                    continue
+                total = 0
+                on = 0
+                for idx in range(int(start), int(end) + 1):
+                    total += 1
+                    if idx in checked_set:
+                        on += 1
+                if total == 0 or on == 0:
+                    new_state = Qt.CheckState.Unchecked
+                elif on == total:
+                    new_state = Qt.CheckState.Checked
+                else:
+                    new_state = Qt.CheckState.PartiallyChecked
+                if item.checkState(0) != new_state:
+                    item.setCheckState(0, new_state)
+        finally:
+            self._suppress_outline_check = False
+
+    def _apply_outline_selection_mode(self):
+        """선택 모드에 따라 아웃라인 항목의 체크박스 표시/숨김을 토글."""
+        if not self._outline_items:
+            return
+        self._suppress_outline_check = True
+        try:
+            for item in self._outline_items:
+                flags = item.flags()
+                if self._selection_mode:
+                    item.setFlags(flags | Qt.ItemFlag.ItemIsUserCheckable)
+                    if item.data(0, Qt.ItemDataRole.CheckStateRole) is None:
+                        item.setCheckState(0, Qt.CheckState.Unchecked)
+                else:
+                    item.setFlags(flags & ~Qt.ItemFlag.ItemIsUserCheckable)
+                    item.setData(0, Qt.ItemDataRole.CheckStateRole, None)
+        finally:
+            self._suppress_outline_check = False
+
+    def _on_selection_mode_toggled(self):
+        self._selection_mode = not self._selection_mode
+        self.selection_mode_btn.setChecked(self._selection_mode)
+        self.selection_mode_btn.setStyleSheet(
+            _TOGGLE_ACTIVE if self._selection_mode else _TOGGLE_INACTIVE
+        )
+        js_bool = "true" if self._selection_mode else "false"
+        self._run_viewer_js(f"setSelectionMode({js_bool})")
+        self._apply_outline_selection_mode()
+
+    def _on_viewer_selection_changed(self):
+        """뷰어에서 셀 체크 상태 변경 통지 → 아웃라인 트리스테이트 갱신."""
+        if not self._outline_items:
+            return
+        self._refresh_outline_check_states()
 
     def _build_cell_chat_view(self):
         """셀 뷰어 + 채팅 패널 스플리터 생성"""
@@ -475,7 +655,7 @@ class NotebookTab(QWidget):
 
         # ── 좌측: 노트북 뷰어 (QWebEngineView) ──────────────────────────
         self.viewer_web = QWebEngineView()
-        self.viewer_web.setPage(_LinkPage(self.viewer_web))
+        self.viewer_web.setPage(_ViewerLinkPage(self, self.viewer_web))
         self.viewer_web.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         viewer_html = _base / "resources" / "notebook_viewer.html"
         self.viewer_web.setUrl(QUrl.fromLocalFile(str(viewer_html.resolve())))
@@ -515,9 +695,9 @@ class NotebookTab(QWidget):
         mode_row.addStretch()
         chat_layout.addLayout(mode_row)
 
-        # 채팅 디스플레이 (QWebEngineView)
+        # 채팅 디스플레이 (QWebEngineView) — 저장 버튼 콘솔 메시지를 받기 위해 _ChatLinkPage 사용
         self.chat_web = QWebEngineView()
-        self.chat_web.setPage(_LinkPage(self.chat_web))
+        self.chat_web.setPage(_ChatLinkPage(self, self.chat_web))
         self.chat_web.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         chat_html = _base / "resources" / "notebook_chat.html"
         self.chat_web.setUrl(QUrl.fromLocalFile(str(chat_html.resolve())))
@@ -544,6 +724,11 @@ class NotebookTab(QWidget):
         )
         self.chat_input.returnPressed.connect(self._on_chat_send)
         input_row.addWidget(self.chat_input)
+
+        self.mic_btn = STTButton()
+        self.mic_btn.record_start.connect(self._on_mic_start)
+        self.mic_btn.record_stop.connect(self._on_mic_stop)
+        input_row.addWidget(self.mic_btn)
 
         self.send_btn = QPushButton("전송")
         self.send_btn.setStyleSheet(_SEND_BTN_STYLE)
@@ -574,6 +759,8 @@ class NotebookTab(QWidget):
     def _on_viewer_page_loaded(self, ok: bool):
         if ok:
             self._viewer_page_ready = True
+            js_bool = "true" if self._selection_mode else "false"
+            self._run_viewer_js(f"setSelectionMode({js_bool})")
             if self._current_nb:
                 self._render_notebook(self._current_nb)
 
@@ -652,13 +839,13 @@ class NotebookTab(QWidget):
         self.outline_view_btn.setStyleSheet(
             _TOGGLE_ACTIVE if idx == 0 else _TOGGLE_INACTIVE
         )
-        self.cell_view_btn.setStyleSheet(
+        self.summary_view_btn.setStyleSheet(
             _TOGGLE_ACTIVE if idx == 1 else _TOGGLE_INACTIVE
         )
-        self.summary_view_btn.setStyleSheet(
+        self.cell_view_btn.setStyleSheet(
             _TOGGLE_ACTIVE if idx == 2 else _TOGGLE_INACTIVE
         )
-        if idx == 2 and self._summary_page_ready and self._summary_view_dirty:
+        if idx == 1 and self._summary_page_ready and self._summary_view_dirty:
             self._rebuild_summary_view()
 
     def _set_context_mode(self, mode: str):
@@ -682,6 +869,7 @@ class NotebookTab(QWidget):
             self.nb_list.item(i).setCheckState(check)
         self.nb_list.blockSignals(False)
         self._update_generate_btn_label()
+        self._update_selected_count_label()
         self._rebuild_summary_view()
 
     def _on_item_check_changed(self, _item):
@@ -700,6 +888,14 @@ class NotebookTab(QWidget):
         else:
             self.select_all_cb.setCheckState(Qt.CheckState.PartiallyChecked)
         self.select_all_cb.blockSignals(False)
+        self.selected_count_label.setText(f"{checked}개 선택")
+
+    def _update_selected_count_label(self):
+        count = sum(
+            1 for i in range(self.nb_list.count())
+            if self.nb_list.item(i).checkState() == Qt.CheckState.Checked
+        )
+        self.selected_count_label.setText(f"{count}개 선택")
 
     def _get_checked_names(self) -> list[str]:
         names = []
@@ -869,7 +1065,7 @@ class NotebookTab(QWidget):
 
         if not to_generate:
             self._rebuild_summary_view()
-            self._switch_view(2)
+            self._switch_view(1)
             return
 
         self.generate_btn.setEnabled(False)
@@ -949,6 +1145,11 @@ class NotebookTab(QWidget):
         """채팅 요청 시그널 emit"""
         self._is_streaming = True
         self._last_chat_question = question
+        self._pending_nb_name = nb_name
+        self._pending_cell_indices = [
+            c.get("cell_idx") for c in selected_cells
+            if c.get("cell_idx") is not None
+        ]
         self._update_chat_btn_streaming()
 
         self.notebook_chat_requested.emit(
@@ -963,6 +1164,7 @@ class NotebookTab(QWidget):
         self.send_btn.clicked.disconnect()
         self.send_btn.clicked.connect(self._on_chat_stop)
         self.chat_input.setEnabled(False)
+        self.mic_btn.set_enabled_stt(False)
 
     def _restore_chat_btn(self):
         """중지 버튼 → 전송 버튼으로 복원"""
@@ -975,6 +1177,7 @@ class NotebookTab(QWidget):
             pass
         self.send_btn.clicked.connect(self._on_chat_send)
         self.chat_input.setEnabled(True)
+        self.mic_btn.set_enabled_stt(True)
         self.chat_input.setFocus()
 
     def _on_chat_stop(self):
@@ -988,6 +1191,54 @@ class NotebookTab(QWidget):
         self._run_chat_js("clearChat()")
         self._restore_chat_btn()
 
+    # ── STT (음성 입력) ───────────────────────────────────────────────────────
+
+    def set_stt_language(self, language: str):
+        self._stt_language = language
+
+    def _on_mic_start(self):
+        from workers.stt_worker import AudioRecorder
+        if self._recorder and self._recorder.isRunning():
+            return
+        self._recorder = AudioRecorder(self)
+        self._recorder.finished.connect(self._on_recording_done)
+        self._recorder.error.connect(self._on_stt_error)
+        self._recorder.start()
+        self.mic_btn.set_recording(True)
+
+    def _on_mic_stop(self):
+        if self._recorder and self._recorder.isRunning():
+            self._recorder.stop_recording()
+        self.mic_btn.set_enabled_stt(False)
+
+    def _on_recording_done(self, audio_bytes: bytes):
+        self.mic_btn.set_recording(False)
+        from workers.stt_worker import STTWorker
+        self._stt_worker = STTWorker(audio_bytes, self._stt_language, self)
+        self._stt_worker.finished.connect(self._on_transcription_done)
+        self._stt_worker.error.connect(self._on_stt_error)
+        self._stt_worker.start()
+        self.chat_status.setText("🎙️ 음성 변환 중…")
+        self.chat_status.show()
+
+    def _on_transcription_done(self, text: str):
+        self.chat_status.hide()
+        cursor = self.chat_input.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.chat_input.setTextCursor(cursor)
+        existing = self.chat_input.toPlainText()
+        if existing and not existing.endswith(" "):
+            self.chat_input.insertPlainText(" " + text)
+        else:
+            self.chat_input.insertPlainText(text)
+        self.mic_btn.set_enabled_stt(True)
+
+    def _on_stt_error(self, msg: str):
+        self.mic_btn.set_recording(False)
+        self.mic_btn.set_enabled_stt(True)
+        self.chat_status.setText(f"🎙️ STT 오류: {msg}")
+        self.chat_status.show()
+
     # ── 채팅 스트리밍 콜백 (MainWindow에서 호출) ──────────────────────────────
 
     def on_chat_streaming_start(self):
@@ -1000,21 +1251,67 @@ class NotebookTab(QWidget):
         self._run_chat_js(f"streamingBuffer += {json.dumps(chunk)}; renderStreamingBuffer();")
 
     def on_chat_finished(self, answer: str):
-        """스트리밍 완료"""
-        self._run_chat_js("finishAiMessage()")
+        """스트리밍 완료 — 캐시 저장용 message_id를 발급해 JS로 넘김."""
+        msg_id = str(uuid.uuid4())
+        self._run_chat_js(f"finishAiMessage({json.dumps(msg_id)})")
         self._restore_chat_btn()
 
         # 대화 기록에 추가
-        if self._last_chat_question:
-            self._chat_history.append({"role": "user", "content": self._last_chat_question})
-            self._last_chat_question = ""
+        question = self._last_chat_question
+        if question:
+            self._chat_history.append({"role": "user", "content": question})
         self._chat_history.append({"role": "assistant", "content": answer})
+
+        # 저장 버튼 클릭 시 조회할 수 있도록 메시지 캐시
+        self._recent_messages[msg_id] = {
+            "nb": self._pending_nb_name or self._current_nb,
+            "question": question,
+            "answer": answer,
+            "cell_indices": list(self._pending_cell_indices),
+        }
+        if len(self._recent_messages) > 100:
+            self._recent_messages.pop(next(iter(self._recent_messages)))
+
+        self._last_chat_question = ""
+        self._pending_nb_name = ""
+        self._pending_cell_indices = []
 
     def on_chat_error(self, msg: str):
         """채팅 에러"""
         escaped = json.dumps(f"❌ {msg}")
         self._run_chat_js(f"showStatus({escaped})")
         self._restore_chat_btn()
+
+    # ── 캐시 저장/삭제 (HTML 💾 버튼 → _ChatLinkPage → 여기로) ────────────────
+
+    def _handle_save_request(self, message_id: str):
+        entry = self._recent_messages.get(message_id)
+        if not entry:
+            return
+        cache = NotebookChatCache(self._cache_dir)
+        # 같은 id가 이미 저장되어 있으면 중복 저장 방지 (idempotent)
+        for entries in cache.get_all().values():
+            if any(e.get("id") == message_id for e in entries):
+                return
+        cache.add(
+            entry.get("nb") or "(unknown)",
+            entry.get("question") or "",
+            entry.get("answer") or "",
+            entry.get("cell_indices") or [],
+            entry_id=message_id,
+        )
+        self.cache_updated.emit()
+
+    def _handle_unsave_request(self, message_id: str):
+        cache = NotebookChatCache(self._cache_dir)
+        if cache.delete_by_id(message_id):
+            self.cache_updated.emit()
+
+    def on_cache_entry_deleted(self, scope: str, entry_id: str):
+        """CachedResponsesTab.entry_deleted 수신 — 해당 버블의 💾 버튼 상태 복원."""
+        if scope != "notebook":
+            return
+        self._run_chat_js(f"markCached({json.dumps(entry_id)}, false)")
 
     # ── 공개 API ──────────────────────────────────────────────────────────────
 
@@ -1041,6 +1338,7 @@ class NotebookTab(QWidget):
         self.select_all_cb.blockSignals(True)
         self.select_all_cb.setCheckState(Qt.CheckState.Unchecked)
         self.select_all_cb.blockSignals(False)
+        self._update_selected_count_label()
 
         self._update_all_indicators()
         self._update_generate_btn_label()
@@ -1089,7 +1387,7 @@ class NotebookTab(QWidget):
         self.status_label.setText("✅ 요약 생성 완료")
         # 대기 중인 채팅이 없을 때만 요약 보기로 전환
         if not self._pending_chat_question:
-            self._switch_view(2)
+            self._switch_view(1)
 
     def on_error(self, msg: str):
         self.generate_btn.setEnabled(True)

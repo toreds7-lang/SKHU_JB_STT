@@ -174,6 +174,8 @@ body {
 }
 .action-btn:hover { background: #3a4055; color: #e2e8f0; }
 .action-btn.copied { color: #4ade80; border-color: #4ade80; }
+.action-btn.cached { color: #fbbf24; border-color: #fbbf24; background: #2d2410; }
+.action-btn.cached:hover { background: #3d3220; }
 
 /* ── Streaming cursor ─────────────────────────────────────── */
 .cursor {
@@ -352,7 +354,7 @@ function addCopyButtons(root) {
   });
 }
 
-function addMsgActions(bubbleDiv, rawMarkdown) {
+function addMsgActions(bubbleDiv, rawMarkdown, messageId, alreadyCached) {
   var label = bubbleDiv.querySelector('.msg-label');
   if (!label || label.querySelector('.msg-actions')) return;
   var actions = document.createElement('div');
@@ -381,7 +383,55 @@ function addMsgActions(bubbleDiv, rawMarkdown) {
 
   actions.appendChild(mdBtn);
   actions.appendChild(txtBtn);
+
+  if (messageId) {
+    bubbleDiv.setAttribute('data-msg-id', messageId);
+    var cacheBtn = document.createElement('button');
+    cacheBtn.className = 'action-btn cache-btn';
+    var setIdle = function() {
+      cacheBtn.textContent = 'save';
+      cacheBtn.classList.remove('cached');
+      cacheBtn.dataset.cached = '0';
+      cacheBtn.title = '\uc774 AI \uc751\ub2f5\uc744 \uce90\uc2dc\uc5d0 \uc800\uc7a5';
+    };
+    var setSaved = function() {
+      cacheBtn.textContent = '\u2713 saved';
+      cacheBtn.classList.add('cached');
+      cacheBtn.dataset.cached = '1';
+      cacheBtn.title = '\uce90\uc2dc\uc5d0 \uc800\uc7a5\ub428 \u2014 \ub2e4\uc2dc \ud074\ub9ad\uc2dc \uc81c\uac70';
+    };
+    if (alreadyCached) { setSaved(); } else { setIdle(); }
+    cacheBtn.addEventListener('click', function() {
+      if (cacheBtn.dataset.cached === '1') {
+        console.log('__UNSAVE_NB__:' + messageId);
+        setIdle();
+      } else {
+        console.log('__SAVE_NB__:' + messageId);
+        setSaved();
+      }
+    });
+    actions.appendChild(cacheBtn);
+  }
+
   label.appendChild(actions);
+}
+
+/** Python\uc5d0\uc11c \ud638\ucd9c: \ud2b9\uc815 \uba54\uc2dc\uc9c0\uc758 \uc800\uc7a5 \ubc84\ud2bc \uc0c1\ud0dc\ub97c \uac31\uc2e0. */
+function markCached(messageId, isCached) {
+  if (!messageId) return;
+  var bubble = document.querySelector('.bubble-ai[data-msg-id="' + messageId + '"]');
+  if (!bubble) return;
+  var btn = bubble.querySelector('.cache-btn');
+  if (!btn) return;
+  if (isCached) {
+    btn.textContent = '\u2713 saved';
+    btn.classList.add('cached');
+    btn.dataset.cached = '1';
+  } else {
+    btn.textContent = 'save';
+    btn.classList.remove('cached');
+    btn.dataset.cached = '0';
+  }
 }
 
 // ── Mermaid 다이어그램 렌더링 ─────────────────────────────────
@@ -495,7 +545,7 @@ function renderStreamingBuffer() {
   scrollToBottom();
 }
 
-function finishAiMessage() {
+function finishAiMessage(messageId) {
   if (!currentAiBubble) return;
   var rawMd = streamingBuffer;
   var bubbleDiv = currentAiBubble.closest('.bubble-ai');
@@ -505,14 +555,14 @@ function finishAiMessage() {
   });
   addCopyButtons(currentAiBubble);
   renderMermaid(currentAiBubble);
-  if (bubbleDiv) addMsgActions(bubbleDiv, rawMd);
+  if (bubbleDiv) addMsgActions(bubbleDiv, rawMd, messageId, false);
   currentAiBubble.removeAttribute('id');
   currentAiBubble = null;
   streamingBuffer = '';
   scrollToBottom();
 }
 
-function appendFinishedAiMessage(text) {
+function appendFinishedAiMessage(text, messageId, alreadyCached) {
   var msg = document.createElement('div');
   msg.className = 'msg msg-ai';
   msg.innerHTML =
@@ -527,7 +577,7 @@ function appendFinishedAiMessage(text) {
   addCopyButtons(msg);
   renderMermaid(msg);
   var bubbleDiv = msg.querySelector('.bubble-ai');
-  if (bubbleDiv) addMsgActions(bubbleDiv, text);
+  if (bubbleDiv) addMsgActions(bubbleDiv, text, messageId, !!alreadyCached);
   scrollToBottom(true);
 }
 

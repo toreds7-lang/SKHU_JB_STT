@@ -11,6 +11,8 @@ import os
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
+
 block_cipher = None
 
 # kiwipiepy + kiwipiepy_model 데이터 파일 경로 자동 탐색
@@ -30,10 +32,35 @@ def _collect_kiwipiepy():
     return result
 
 
+# faster-whisper / ctranslate2 / sounddevice 등 STT 의존성 수집
+# (네이티브 DLL: libctranslate2, libportaudio / 데이터: silero VAD onnx 등)
+def _collect_stt():
+    datas, binaries, hiddenimports = [], [], []
+    for pkg in ("faster_whisper", "ctranslate2", "onnxruntime", "tokenizers"):
+        try:
+            d, b, h = collect_all(pkg)
+            datas += d
+            binaries += b
+            hiddenimports += h
+        except Exception:
+            pass
+    try:
+        d, b, h = collect_all("_sounddevice_data")
+        datas += d
+        binaries += b
+        hiddenimports += h
+    except Exception:
+        pass
+    return datas, binaries, hiddenimports
+
+
+_stt_datas, _stt_binaries, _stt_hiddenimports = _collect_stt()
+
+
 a = Analysis(
     ["main.py"],
     pathex=["."],
-    binaries=[],
+    binaries=_stt_binaries,
     datas=[
         # 리소스 파일
         ("SK_Hynix.png",          "."),
@@ -46,10 +73,15 @@ a = Analysis(
         ("resources/summary.html",         "resources"),
         ("resources/notebook_viewer.html", "resources"),
         ("resources/notebook_chat.html",   "resources"),
+        ("resources/cached_response.html", "resources"),
         ("resources/js",             "resources/js"),
         ("resources/css",            "resources/css"),
+        # STT 서브프로세스 스크립트 (참조용 — 실행은 --stt-subprocess sentinel 경유)
+        ("workers/stt_subprocess.py", "workers"),
         # kiwipiepy 모델 데이터
         *_collect_kiwipiepy(),
+        # faster-whisper / ctranslate2 / onnxruntime / tokenizers 데이터
+        *_stt_datas,
     ],
     hiddenimports=[
         # FAISS
@@ -86,6 +118,12 @@ a = Analysis(
         "PyQt6.QtCore",
         "PyQt6.QtWidgets",
         "PyQt6.QtGui",
+        # STT (faster-whisper subprocess 경유)
+        "workers.stt_subprocess",
+        "workers.stt_worker",
+        "sounddevice",
+        "_cffi_backend",
+        *_stt_hiddenimports,
     ],
     hookspath=[],
     runtime_hooks=[],
@@ -148,5 +186,7 @@ coll = COLLECT(
 #
 # 4. 배포:
 #    dist/SKHU_Agent/ 폴더 전체를 배포
-#    사용자는 SKHU_Agent.exe 옆에 env.txt와 work/ 폴더를 배치
+#    사용자는 SKHU_Agent.exe 옆에 env.txt, work/ 폴더, 그리고 models/ 폴더
+#    (faster-whisper 모델 캐시)를 배치. models/ 가 없으면 첫 STT 실행 시
+#    HuggingFace 에서 자동 다운로드되어 같은 위치에 캐시됨.
 # ──────────────────────────────────────────────────────────────────────────────

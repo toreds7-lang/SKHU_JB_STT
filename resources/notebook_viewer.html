@@ -56,6 +56,9 @@ body {
   font-weight: 600;
   min-width: 80px;
 }
+body:not(.show-cb) .cell-cb,
+body:not(.show-cb) #select-all-btn,
+body:not(.show-cb) .sel-count { display: none; }
 
 /* ── Cell container ───────────────────────────────────────── */
 #cells-container {
@@ -222,18 +225,18 @@ body {
 .md-body img { max-width: 100%; border-radius: 4px; }
 
 /* ── Highlight.js dark theme (Atom One Dark) ──────────────── */
-.hljs { color: #abb2bf; }
+.hljs { color: #e2e8f0; }
 .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-link { color: #c678dd; }
 .hljs-function .hljs-keyword { color: #c678dd; }
 .hljs-string, .hljs-addition { color: #98c379; }
 .hljs-number, .hljs-attr { color: #d19a66; }
-.hljs-comment, .hljs-quote, .hljs-deletion { color: #5c6370; font-style: italic; }
+.hljs-comment, .hljs-quote, .hljs-deletion { color: #9da5b0; font-style: italic; }
 .hljs-title, .hljs-title.function_ { color: #61afef; }
 .hljs-built_in, .hljs-type { color: #e5c07b; }
 .hljs-variable, .hljs-template-variable { color: #e06c75; }
 .hljs-name, .hljs-selector-id, .hljs-selector-class { color: #e06c75; }
 .hljs-meta { color: #61afef; }
-.hljs-params { color: #abb2bf; }
+.hljs-params { color: #e2e8f0; }
 .hljs-subst { color: #e06c75; }
 .hljs-regexp { color: #98c379; }
 .hljs-symbol { color: #56b6c2; }
@@ -392,6 +395,52 @@ function updateSelCount() {
   var btn = document.getElementById('select-all-btn');
   btn.textContent = (count === cellsData.length && cellsData.length > 0) ? '\uc804\uccb4 \ud574\uc81c' : '\uc804\uccb4 \uc120\ud0dd';
   btn.classList.toggle('active', count > 0);
+  // Notify host so outline tri-state can refresh
+  console.log("__SEL_CHANGED__");
+}
+
+// \u2500\u2500 Outline-driven range selection helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+function setRangeChecked(start, end, checked) {
+  var cells = document.querySelectorAll('.nb-cell');
+  cells.forEach(function(el) {
+    var idx = parseInt(el.getAttribute('data-idx'), 10);
+    if (isNaN(idx) || idx < start || idx > end) return;
+    var cb = el.querySelector('.cell-cb');
+    if (!cb) return;
+    cb.checked = !!checked;
+    el.classList.toggle('selected', !!checked);
+  });
+  updateSelCount();
+}
+
+function getAllCheckedIndices() {
+  var out = [];
+  var cells = document.querySelectorAll('.nb-cell');
+  cells.forEach(function(el) {
+    var cb = el.querySelector('.cell-cb');
+    if (cb && cb.checked) {
+      var idx = parseInt(el.getAttribute('data-idx'), 10);
+      if (!isNaN(idx)) out.push(idx);
+    }
+  });
+  return JSON.stringify(out);
+}
+
+// ── Selection mode (show/hide checkboxes) ───────────────────
+function setSelectionMode(on) {
+  if (on) {
+    document.body.classList.add('show-cb');
+  } else {
+    document.body.classList.remove('show-cb');
+    var cbs = document.querySelectorAll('.cell-cb');
+    cbs.forEach(function(cb) {
+      cb.checked = false;
+      var cell = cb.closest('.nb-cell');
+      if (cell) cell.classList.remove('selected');
+    });
+    lastCheckedIdx = -1;
+    updateSelCount();
+  }
 }
 
 // ── Toggle select all ────────────────────────────────────────

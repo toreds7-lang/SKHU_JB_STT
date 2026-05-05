@@ -9,6 +9,17 @@ import traceback
 from pathlib import Path
 
 
+# STT subprocess mode — must run BEFORE any heavy imports / pythonw relaunch / Qt init.
+# When the frozen exe re-spawns itself as the faster-whisper child, route directly to
+# the subprocess loop and skip GUI startup.
+if "--stt-subprocess" in sys.argv:
+    _idx = sys.argv.index("--stt-subprocess")
+    if _idx + 1 < len(sys.argv):
+        from workers.stt_subprocess import run_subprocess
+        sys.exit(run_subprocess(sys.argv[_idx + 1]))
+    sys.exit(2)
+
+
 def _maybe_relaunch_with_pythonw():
     """콘솔 python.exe로 실행됐을 때 pythonw.exe로 재실행하여 터미널을 해방."""
     if sys.platform != "win32":
