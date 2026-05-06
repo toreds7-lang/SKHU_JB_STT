@@ -197,6 +197,9 @@ class _AutoExpandingEdit(QPlainTextEdit):
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.document().contentsChanged.connect(self._adjust_height)
+        self._history: list[str] = []
+        self._hist_idx: int = -1
+        self._draft: str = ""
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -229,14 +232,59 @@ class _AutoExpandingEdit(QPlainTextEdit):
         super().resizeEvent(event)
         self._adjust_height()
 
+    def add_to_history(self, text: str) -> None:
+        text = text.strip()
+        if not text or text.startswith('[자동 설명 요청]'):
+            return
+        if self._history and self._history[-1] == text:
+            return
+        self._history.append(text)
+        self._hist_idx = -1
+        self._draft = ""
+
+    def _is_on_first_line(self) -> bool:
+        return self.textCursor().blockNumber() == 0
+
+    def _is_on_last_line(self) -> bool:
+        return self.textCursor().blockNumber() == self.document().lastBlock().blockNumber()
+
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+        key = event.key()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 super().keyPressEvent(event)
             else:
                 self.returnPressed.emit()
-        else:
-            super().keyPressEvent(event)
+            return
+
+        if key == Qt.Key.Key_Up and self._is_on_first_line():
+            if not self._history:
+                super().keyPressEvent(event)
+                return
+            if self._hist_idx == -1:
+                self._draft = self.toPlainText()
+                self._hist_idx = len(self._history) - 1
+            elif self._hist_idx > 0:
+                self._hist_idx -= 1
+            self.setPlainText(self._history[self._hist_idx])
+            c = self.textCursor(); c.movePosition(c.MoveOperation.End); self.setTextCursor(c)
+            return
+
+        if key == Qt.Key.Key_Down and self._is_on_last_line():
+            if self._hist_idx == -1:
+                super().keyPressEvent(event)
+                return
+            if self._hist_idx < len(self._history) - 1:
+                self._hist_idx += 1
+                self.setPlainText(self._history[self._hist_idx])
+            else:
+                self._hist_idx = -1
+                self.setPlainText(self._draft)
+                self._draft = ""
+            c = self.textCursor(); c.movePosition(c.MoveOperation.End); self.setTextCursor(c)
+            return
+
+        super().keyPressEvent(event)
 
 
 # ── 색상 상수 ────────────────────────────────────────────────────────────────
@@ -1086,6 +1134,9 @@ class NotebookTab(QWidget):
         raw = self.chat_input.toPlainText().strip()
         # 빈 입력이면 자동 설명 모드 sentinel 사용
         question = raw if raw else _AUTO_EXPLAIN_SENTINEL
+
+        if raw:
+            self.chat_input.add_to_history(raw)
 
         # 선택된 셀 가져오기 (비동기 JS 콜백)
         self._run_viewer_js("getSelectedCells()", lambda result: self._on_cells_selected(result, question))

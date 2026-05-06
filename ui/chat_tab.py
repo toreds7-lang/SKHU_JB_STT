@@ -37,6 +37,9 @@ class _AutoExpandingEdit(QPlainTextEdit):
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.document().contentsChanged.connect(self._adjust_height)
+        self._history: list[str] = []
+        self._hist_idx: int = -1
+        self._draft: str = ""
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -73,14 +76,59 @@ class _AutoExpandingEdit(QPlainTextEdit):
         # Width changes affect word-wrap, so recalculate height
         self._adjust_height()
 
+    def add_to_history(self, text: str) -> None:
+        text = text.strip()
+        if not text or text.startswith('[자동 설명 요청]'):
+            return
+        if self._history and self._history[-1] == text:
+            return
+        self._history.append(text)
+        self._hist_idx = -1
+        self._draft = ""
+
+    def _is_on_first_line(self) -> bool:
+        return self.textCursor().blockNumber() == 0
+
+    def _is_on_last_line(self) -> bool:
+        return self.textCursor().blockNumber() == self.document().lastBlock().blockNumber()
+
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+        key = event.key()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                super().keyPressEvent(event)  # Shift+Enter → newline
+                super().keyPressEvent(event)
             else:
                 self.returnPressed.emit()
-        else:
-            super().keyPressEvent(event)
+            return
+
+        if key == Qt.Key.Key_Up and self._is_on_first_line():
+            if not self._history:
+                super().keyPressEvent(event)
+                return
+            if self._hist_idx == -1:
+                self._draft = self.toPlainText()
+                self._hist_idx = len(self._history) - 1
+            elif self._hist_idx > 0:
+                self._hist_idx -= 1
+            self.setPlainText(self._history[self._hist_idx])
+            c = self.textCursor(); c.movePosition(c.MoveOperation.End); self.setTextCursor(c)
+            return
+
+        if key == Qt.Key.Key_Down and self._is_on_last_line():
+            if self._hist_idx == -1:
+                super().keyPressEvent(event)
+                return
+            if self._hist_idx < len(self._history) - 1:
+                self._hist_idx += 1
+                self.setPlainText(self._history[self._hist_idx])
+            else:
+                self._hist_idx = -1
+                self.setPlainText(self._draft)
+                self._draft = ""
+            c = self.textCursor(); c.movePosition(c.MoveOperation.End); self.setTextCursor(c)
+            return
+
+        super().keyPressEvent(event)
 
 
 _COPY_PREFIX = "__COPY__:"
@@ -777,6 +825,7 @@ class ChatTab(QWidget):
         query = self.input_edit.toPlainText().strip()
         if not query:
             return
+        self.input_edit.add_to_history(query)
         self.input_edit.clear()
         self.chips_scroll.setVisible(False)
         self.query_submitted.emit(query, False)
