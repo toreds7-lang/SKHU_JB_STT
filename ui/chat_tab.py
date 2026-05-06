@@ -40,6 +40,7 @@ class _AutoExpandingEdit(QPlainTextEdit):
         self._history: list[str] = []
         self._hist_idx: int = -1
         self._draft: str = ""
+        self._history_file: Path | None = None
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -76,6 +77,16 @@ class _AutoExpandingEdit(QPlainTextEdit):
         # Width changes affect word-wrap, so recalculate height
         self._adjust_height()
 
+    def set_history_file(self, path: Path) -> None:
+        self._history_file = path
+        try:
+            if path.exists():
+                self._history = json.loads(path.read_text(encoding="utf-8"))
+                self._hist_idx = -1
+                self._draft = ""
+        except Exception:
+            self._history = []
+
     def add_to_history(self, text: str) -> None:
         text = text.strip()
         if not text or text.startswith('[자동 설명 요청]'):
@@ -85,6 +96,15 @@ class _AutoExpandingEdit(QPlainTextEdit):
         self._history.append(text)
         self._hist_idx = -1
         self._draft = ""
+        if self._history_file:
+            try:
+                self._history_file.parent.mkdir(parents=True, exist_ok=True)
+                self._history_file.write_text(
+                    json.dumps(self._history, ensure_ascii=False, indent=2),
+                    encoding="utf-8"
+                )
+            except Exception:
+                pass
 
     def _is_on_first_line(self) -> bool:
         return self.textCursor().blockNumber() == 0
@@ -293,6 +313,7 @@ class ChatTab(QWidget):
 
     def set_cache_dir(self, path: str):
         self._cache_dir = path
+        self.input_edit.set_history_file(Path(path) / "chat_input_history.json")
 
     # ── 노트북 목록 ───────────────────────────────────────────────────────────
 
