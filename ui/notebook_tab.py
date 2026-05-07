@@ -74,63 +74,99 @@ _OUTLINE_TREE_STYLE = (
 class _CollapseHandle(QSplitterHandle):
     """스플리터 핸들 중앙에 ◀/▶ 버튼을 넣어 한 번 클릭으로 패널을 접고 펼친다."""
 
-    def __init__(self, orientation, parent, collapse_index: int = 1):
+    _BTN_STYLE = (
+        "QPushButton { background: #374151; color: #9ca3af; border: none; "
+        "border-radius: 3px; font-size: 9px; padding: 0; }"
+        "QPushButton:hover { background: #4b5563; color: #e2e8f0; }"
+    )
+
+    def __init__(self, orientation, parent, collapse_index: int = 1,
+                 secondary_collapse_index: int | None = None):
         super().__init__(orientation, parent)
         self._collapse_index = collapse_index
+        self._secondary_collapse_index = secondary_collapse_index
         self._saved_sizes: list[int] | None = None
+        self._saved_sizes2: list[int] | None = None
+
+        has_secondary = secondary_collapse_index is not None
+        btn_h = 18 if has_secondary else 40
 
         arrow = "▶" if collapse_index == 1 else "◀"
         self._btn = QPushButton(arrow, self)
-        self._btn.setFixedSize(16, 40)
-        self._btn.setStyleSheet(
-            "QPushButton { background: #374151; color: #9ca3af; border: none; "
-            "border-radius: 3px; font-size: 9px; padding: 0; }"
-            "QPushButton:hover { background: #4b5563; color: #e2e8f0; }"
-        )
+        self._btn.setFixedSize(16, btn_h)
+        self._btn.setStyleSheet(self._BTN_STYLE)
         self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn.setToolTip("셀 Q&A 패널 접기/펼치기" if collapse_index == 1 else "패널 접기/펼치기")
         self._btn.clicked.connect(self._toggle)
         self.splitter().splitterMoved.connect(self._sync_arrow)
 
+        if has_secondary:
+            arrow2 = "▶" if secondary_collapse_index == 1 else "◀"
+            self._btn2 = QPushButton(arrow2, self)
+            self._btn2.setFixedSize(16, btn_h)
+            self._btn2.setStyleSheet(self._BTN_STYLE)
+            self._btn2.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._btn2.setToolTip("노트북 뷰어 접기/펼치기" if secondary_collapse_index == 0 else "패널 접기/펼치기")
+            self._btn2.clicked.connect(self._toggle2)
+        else:
+            self._btn2 = None
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._btn.move((self.width() - 16) // 2, (self.height() - 40) // 2)
+        cx = (self.width() - 16) // 2
+        if self._btn2 is not None:
+            cy = self.height() // 2
+            self._btn2.move(cx, cy - 19)
+            self._btn.move(cx, cy + 1)
+        else:
+            self._btn.move(cx, (self.height() - 40) // 2)
 
     def _sync_arrow(self):
         sizes = self.splitter().sizes()
-        collapsed = sizes[self._collapse_index] == 0
-        if self._collapse_index == 1:
-            self._btn.setText("◀" if collapsed else "▶")
-        else:
-            self._btn.setText("▶" if collapsed else "◀")
 
-    def _toggle(self):
+        collapsed = sizes[self._collapse_index] == 0
+        self._btn.setText("◀" if collapsed else "▶") if self._collapse_index == 1 \
+            else self._btn.setText("▶" if collapsed else "◀")
+
+        if self._btn2 is not None:
+            collapsed2 = sizes[self._secondary_collapse_index] == 0
+            self._btn2.setText("◀" if collapsed2 else "▶") if self._secondary_collapse_index == 1 \
+                else self._btn2.setText("▶" if collapsed2 else "◀")
+
+    def _toggle_index(self, collapse_idx: int, saved_attr: str):
         splitter = self.splitter()
         sizes = splitter.sizes()
         total = sum(sizes)
-        if sizes[self._collapse_index] == 0:
-            restored = self._saved_sizes or (
-                [total * 22 // 100, total * 78 // 100]
-                if self._collapse_index == 0
-                else [total * 58 // 100, total * 42 // 100]
-            )
+        saved = getattr(self, saved_attr)
+        if sizes[collapse_idx] == 0:
+            restored = saved or [total * 58 // 100, total * 42 // 100]
             splitter.setSizes(restored)
+            setattr(self, saved_attr, None)
         else:
-            self._saved_sizes = list(sizes)
-            new = [0, total] if self._collapse_index == 0 else [total, 0]
-            splitter.setSizes(new)
+            setattr(self, saved_attr, list(sizes))
+            splitter.setSizes([0, total] if collapse_idx == 0 else [total, 0])
         self._sync_arrow()
+
+    def _toggle(self):
+        self._toggle_index(self._collapse_index, '_saved_sizes')
+
+    def _toggle2(self):
+        self._toggle_index(self._secondary_collapse_index, '_saved_sizes2')
 
 
 class _CollapsibleSplitter(QSplitter):
     """버튼으로 한 패널을 접을 수 있는 QSplitter."""
 
-    def __init__(self, orientation, collapse_index: int = 1, parent=None):
+    def __init__(self, orientation, collapse_index: int = 1,
+                 secondary_collapse_index: int | None = None, parent=None):
         super().__init__(orientation, parent)
         self._collapse_index = collapse_index
+        self._secondary_collapse_index = secondary_collapse_index
         self.setHandleWidth(16)
 
     def createHandle(self):
-        return _CollapseHandle(self.orientation(), self, self._collapse_index)
+        return _CollapseHandle(self.orientation(), self, self._collapse_index,
+                               self._secondary_collapse_index)
 
 
 # ── QWebEnginePage: 외부 링크 + 클립보드 ──────────────────────────────────────
@@ -250,6 +286,8 @@ class _AutoExpandingEdit(QPlainTextEdit):
         if self._history and self._history[-1] == text:
             return
         self._history.append(text)
+        if len(self._history) > 100:
+            self._history = self._history[-100:]
         self._hist_idx = -1
         self._draft = ""
         if self._history_file:
@@ -277,7 +315,7 @@ class _AutoExpandingEdit(QPlainTextEdit):
                 self.returnPressed.emit()
             return
 
-        if key == Qt.Key.Key_Up and self._is_on_first_line():
+        if key == Qt.Key.Key_Up:
             if not self._history:
                 super().keyPressEvent(event)
                 return
@@ -290,7 +328,7 @@ class _AutoExpandingEdit(QPlainTextEdit):
             c = self.textCursor(); c.movePosition(c.MoveOperation.End); self.setTextCursor(c)
             return
 
-        if key == Qt.Key.Key_Down and self._is_on_last_line():
+        if key == Qt.Key.Key_Down:
             if self._hist_idx == -1:
                 super().keyPressEvent(event)
                 return
@@ -711,7 +749,7 @@ class NotebookTab(QWidget):
 
     def _build_cell_chat_view(self):
         """셀 뷰어 + 채팅 패널 스플리터 생성"""
-        self._cell_chat_splitter = _CollapsibleSplitter(Qt.Orientation.Horizontal, collapse_index=1)
+        self._cell_chat_splitter = _CollapsibleSplitter(Qt.Orientation.Horizontal, collapse_index=1, secondary_collapse_index=0)
         self._cell_chat_splitter.setStyleSheet(
             "QSplitter::handle { background: #2a3045; }"
         )

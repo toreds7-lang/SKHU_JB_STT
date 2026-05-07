@@ -94,6 +94,8 @@ class _AutoExpandingEdit(QPlainTextEdit):
         if self._history and self._history[-1] == text:
             return
         self._history.append(text)
+        if len(self._history) > 100:
+            self._history = self._history[-100:]
         self._hist_idx = -1
         self._draft = ""
         if self._history_file:
@@ -121,7 +123,7 @@ class _AutoExpandingEdit(QPlainTextEdit):
                 self.returnPressed.emit()
             return
 
-        if key == Qt.Key.Key_Up and self._is_on_first_line():
+        if key == Qt.Key.Key_Up:
             if not self._history:
                 super().keyPressEvent(event)
                 return
@@ -134,7 +136,7 @@ class _AutoExpandingEdit(QPlainTextEdit):
             c = self.textCursor(); c.movePosition(c.MoveOperation.End); self.setTextCursor(c)
             return
 
-        if key == Qt.Key.Key_Down and self._is_on_last_line():
+        if key == Qt.Key.Key_Down:
             if self._hist_idx == -1:
                 super().keyPressEvent(event)
                 return
