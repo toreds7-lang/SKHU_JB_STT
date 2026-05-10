@@ -391,6 +391,10 @@ marked.setOptions({
   gfm: true
 });
 
+function fixMdSpaces(md) {
+  return md.replace(/\*\*[ \t]+((?:[^\n*]|\*(?!\*))+?)[ \t]+\*\*/g, '**$1**');
+}
+
 var container = document.getElementById('cards-container');
 
 // ── 코드 복사 버튼 ──────────────────────────────────────────────
@@ -476,7 +480,7 @@ function addSummaryCard(nbName, markdown, isStale) {
 
   var body = document.createElement('div');
   body.className = 'card-body';
-  body.innerHTML = marked.parse(markdown);
+  body.innerHTML = marked.parse(fixMdSpaces(markdown));
   body.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
     hljs.highlightElement(el);
   });

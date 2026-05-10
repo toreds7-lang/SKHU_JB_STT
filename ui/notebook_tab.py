@@ -168,6 +168,11 @@ class _CollapsibleSplitter(QSplitter):
         return _CollapseHandle(self.orientation(), self, self._collapse_index,
                                self._secondary_collapse_index)
 
+    def toggle(self):
+        h = self.handle(1)
+        if isinstance(h, _CollapseHandle):
+            h._toggle()
+
 
 # ── QWebEnginePage: 외부 링크 + 클립보드 ──────────────────────────────────────
 
@@ -196,6 +201,26 @@ class _ViewerLinkPage(_LinkPage):
         if message == "__SEL_CHANGED__":
             self._tab._on_viewer_selection_changed()
             return
+        if message.startswith("__WORD_GRAPH__:"):
+            self._tab._on_word_graph_requested(message[len("__WORD_GRAPH__:"):])
+            return
+        if message.startswith("__DEFINE__:"):
+            self._tab._on_define_requested(message[len("__DEFINE__:"):])
+            return
+        if message.startswith("__EXPLAIN__:"):
+            try:
+                text = json.loads(message[len("__EXPLAIN__:"):])
+            except Exception:
+                text = message[len("__EXPLAIN__:"):]
+            self._tab._on_explain_requested(text)
+            return
+        if message.startswith("__PASTE_INPUT__:"):
+            try:
+                text = json.loads(message[len("__PASTE_INPUT__:"):])
+            except Exception:
+                text = message[len("__PASTE_INPUT__:"):]
+            self._tab._on_paste_to_input(text)
+            return
         super().javaScriptConsoleMessage(level, message, line, source)
 
 
@@ -212,6 +237,26 @@ class _ChatLinkPage(_LinkPage):
             return
         if message.startswith("__UNSAVE_NB__:"):
             self._tab._handle_unsave_request(message[len("__UNSAVE_NB__:"):])
+            return
+        if message.startswith("__WORD_GRAPH__:"):
+            self._tab._on_word_graph_requested(message[len("__WORD_GRAPH__:"):])
+            return
+        if message.startswith("__DEFINE__:"):
+            self._tab._on_define_requested(message[len("__DEFINE__:"):])
+            return
+        if message.startswith("__EXPLAIN__:"):
+            try:
+                text = json.loads(message[len("__EXPLAIN__:"):])
+            except Exception:
+                text = message[len("__EXPLAIN__:"):]
+            self._tab._on_explain_requested(text)
+            return
+        if message.startswith("__PASTE_INPUT__:"):
+            try:
+                text = json.loads(message[len("__PASTE_INPUT__:"):])
+            except Exception:
+                text = message[len("__PASTE_INPUT__:"):]
+            self._tab._on_paste_to_input(text)
             return
         super().javaScriptConsoleMessage(level, message, line, source)
 
@@ -397,6 +442,8 @@ class NotebookTab(QWidget):
         self._pending_cell_indices: list = []   # 진행 중인 채팅의 선택 셀 (캐시 저장용)
         self._recent_messages: dict = {}        # message_id → {nb, question, answer, cell_indices}
         self._context_mode: str = "summary"     # "summary" | "full"
+        self._history_cache: NotebookChatCache | None = None  # set_cache_dir에서 초기화
+        self._pending_restore_nb: str = ""                     # 페이지 로드 전 복원 대기 노트북
         self._stt_language = "ko"
         self._recorder   = None
         self._stt_worker = None
@@ -410,13 +457,9 @@ class NotebookTab(QWidget):
         layout.setContentsMargins(12, 12, 12, 8)
         layout.setSpacing(8)
 
-        title = QLabel("📓  노트북 뷰어")
-        title.setStyleSheet("color: #e2e8f0; font-size: 14px; font-weight: 700;")
-        layout.addWidget(title)
-
         # ── 메인 스플리터 (좌: 목록 | 우: 콘텐츠) ────────────────────────────
-        splitter = _CollapsibleSplitter(Qt.Orientation.Horizontal, collapse_index=0)
-        splitter.setStyleSheet(
+        self._list_splitter = _CollapsibleSplitter(Qt.Orientation.Horizontal, collapse_index=0)
+        self._list_splitter.setStyleSheet(
             "QSplitter::handle { background: #2a3045; }"
         )
 
@@ -490,7 +533,7 @@ class NotebookTab(QWidget):
         self.status_label.setWordWrap(True)
         left_layout.addWidget(self.status_label)
 
-        splitter.addWidget(left_panel)
+        self._list_splitter.addWidget(left_panel)
 
         # ── 우측 패널: 셀+채팅 / 요약 보기 ──────────────────────────────────
         right_panel = QWidget()
@@ -523,9 +566,14 @@ class NotebookTab(QWidget):
         self.selection_mode_btn.clicked.connect(self._on_selection_mode_toggled)
         toggle_row.addWidget(self.selection_mode_btn)
 
+        self.chat_toggle_btn = QPushButton("💬 Q&A")
+        self.chat_toggle_btn.setStyleSheet(_TOGGLE_INACTIVE)
+        self.chat_toggle_btn.clicked.connect(self._toggle_chat_panel)
+        toggle_row.addWidget(self.chat_toggle_btn)
+
         right_layout.addLayout(toggle_row)
 
-        # 스택 위젯 (아웃라인 뷰 / 요약 뷰 / 셀+채팅 뷰)
+        # 스택 위젯 (아웃라인 뷰 / 요약 뷰 / 셀 뷰)
         self.view_stack = QStackedWidget()
 
         # --- [0] 아웃라인 뷰 ---
@@ -545,15 +593,22 @@ class NotebookTab(QWidget):
         self.summary_web.loadFinished.connect(self._on_summary_page_loaded)
         self.view_stack.addWidget(self.summary_web)
 
-        # --- [2] 셀+채팅 뷰 (QSplitter) ---
-        self._build_cell_chat_view()
-        self.view_stack.addWidget(self._cell_chat_splitter)
+        # --- [2] 셀 뷰 (뷰어만, 채팅 패널은 content_splitter에서 공유) ---
+        self._build_viewer_web()
+        self.view_stack.addWidget(self.viewer_web)
 
-        right_layout.addWidget(self.view_stack)
-        splitter.addWidget(right_panel)
+        # view_stack + 공유 채팅 패널을 수평 스플리터로 묶기
+        self._content_splitter = _CollapsibleSplitter(Qt.Orientation.Horizontal, collapse_index=1, secondary_collapse_index=0)
+        self._content_splitter.setStyleSheet("QSplitter::handle { background: #2a3045; }")
+        self._content_splitter.addWidget(self.view_stack)
+        self._build_chat_panel()   # self._content_splitter에 chat_panel 추가
+        self._content_splitter.setSizes([1000, 0])   # 기본: 채팅 접힘
 
-        splitter.setSizes([220, 780])
-        layout.addWidget(splitter, 1)
+        right_layout.addWidget(self._content_splitter)
+        self._list_splitter.addWidget(right_panel)
+
+        self._list_splitter.setSizes([220, 780])
+        layout.addWidget(self._list_splitter, 1)
 
         # 단축키
         QShortcut(QKeySequence("Ctrl+="), self).activated.connect(self._zoom_in)
@@ -567,7 +622,8 @@ class NotebookTab(QWidget):
         self.outline_tree.setHeaderHidden(True)
         self.outline_tree.setIndentation(16)
         self.outline_tree.setStyleSheet(_OUTLINE_TREE_STYLE)
-        self.outline_tree.itemClicked.connect(self._on_outline_item_clicked)
+        self.outline_tree.itemClicked.connect(self._on_outline_item_single_clicked)
+        self.outline_tree.itemDoubleClicked.connect(self._on_outline_item_double_clicked)
         self.outline_tree.itemChanged.connect(self._on_outline_item_check_changed)
         self._suppress_outline_check = False
         self._just_toggled_outline_check = False
@@ -647,12 +703,17 @@ class NotebookTab(QWidget):
             self._suppress_outline_check = False
         self._apply_outline_selection_mode()
 
-    def _on_outline_item_clicked(self, item: QTreeWidgetItem, col: int):
-        """아웃라인 항목 라벨 클릭 → 셀 보기로 전환 후 해당 셀로 스크롤.
+    def _on_outline_item_single_clicked(self, item: QTreeWidgetItem, col: int):
+        """아웃라인 항목 단일 클릭 → 자식이 있으면 expand/collapse 토글.
         체크박스 클릭은 itemChanged 직후 itemClicked가 따라오므로 플래그로 무시."""
         if self._just_toggled_outline_check:
             self._just_toggled_outline_check = False
             return
+        if item.childCount() > 0:
+            item.setExpanded(not item.isExpanded())
+
+    def _on_outline_item_double_clicked(self, item: QTreeWidgetItem, col: int):
+        """아웃라인 항목 더블 클릭 → 셀 보기로 전환 후 해당 셀로 스크롤."""
         cell_idx = item.data(0, Qt.ItemDataRole.UserRole)
         if cell_idx is None:
             return
@@ -747,28 +808,27 @@ class NotebookTab(QWidget):
             return
         self._refresh_outline_check_states()
 
-    def _build_cell_chat_view(self):
-        """셀 뷰어 + 채팅 패널 스플리터 생성"""
-        self._cell_chat_splitter = _CollapsibleSplitter(Qt.Orientation.Horizontal, collapse_index=1, secondary_collapse_index=0)
-        self._cell_chat_splitter.setStyleSheet(
-            "QSplitter::handle { background: #2a3045; }"
-        )
-
+    def _build_viewer_web(self):
+        """셀 뷰어 QWebEngineView 생성 (채팅 패널은 _build_chat_panel에서 별도 생성)"""
         if getattr(sys, "frozen", False):
             _base = Path(sys._MEIPASS)
         else:
             _base = Path(__file__).parent.parent
 
-        # ── 좌측: 노트북 뷰어 (QWebEngineView) ──────────────────────────
         self.viewer_web = QWebEngineView()
         self.viewer_web.setPage(_ViewerLinkPage(self, self.viewer_web))
         self.viewer_web.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         viewer_html = _base / "resources" / "notebook_viewer.html"
         self.viewer_web.setUrl(QUrl.fromLocalFile(str(viewer_html.resolve())))
         self.viewer_web.loadFinished.connect(self._on_viewer_page_loaded)
-        self._cell_chat_splitter.addWidget(self.viewer_web)
 
-        # ── 우측: 채팅 패널 ─────────────────────────────────────────────
+    def _build_chat_panel(self):
+        """공유 채팅 패널 생성 후 self._content_splitter에 추가"""
+        if getattr(sys, "frozen", False):
+            _base = Path(sys._MEIPASS)
+        else:
+            _base = Path(__file__).parent.parent
+
         chat_panel = QWidget()
         chat_layout = QVBoxLayout(chat_panel)
         chat_layout.setContentsMargins(0, 0, 0, 0)
@@ -857,8 +917,7 @@ class NotebookTab(QWidget):
         clear_row.addWidget(self.clear_chat_btn)
         chat_layout.addLayout(clear_row)
 
-        self._cell_chat_splitter.addWidget(chat_panel)
-        self._cell_chat_splitter.setSizes([580, 420])
+        self._content_splitter.addWidget(chat_panel)
 
     # ── 페이지 로드 콜백 ─────────────────────────────────────────────────────
 
@@ -873,6 +932,10 @@ class NotebookTab(QWidget):
     def _on_chat_page_loaded(self, ok: bool):
         if ok:
             self._chat_page_ready = True
+            if self._pending_restore_nb:
+                nb = self._pending_restore_nb
+                self._pending_restore_nb = ""
+                self._restore_notebook_chat(nb)
 
     def _on_summary_page_loaded(self, ok: bool):
         if ok:
@@ -901,40 +964,40 @@ class NotebookTab(QWidget):
 
     def _zoom_in(self):
         idx = self.view_stack.currentIndex()
-        if idx == 1:
+        if idx == 2:
             if self._viewer_font_size < 24:
                 self._viewer_font_size += 1
                 self._run_viewer_js(f"setFontSize({self._viewer_font_size})")
             if self._chat_font_size < 24:
                 self._chat_font_size += 1
                 self._run_chat_js(f"setFontSize({self._chat_font_size})")
-        elif idx == 2:
+        elif idx == 1:
             if self._summary_font_size < 24:
                 self._summary_font_size += 1
                 self._run_summary_js(f"setFontSize({self._summary_font_size})")
 
     def _zoom_out(self):
         idx = self.view_stack.currentIndex()
-        if idx == 1:
+        if idx == 2:
             if self._viewer_font_size > 8:
                 self._viewer_font_size -= 1
                 self._run_viewer_js(f"setFontSize({self._viewer_font_size})")
             if self._chat_font_size > 8:
                 self._chat_font_size -= 1
                 self._run_chat_js(f"setFontSize({self._chat_font_size})")
-        elif idx == 2:
+        elif idx == 1:
             if self._summary_font_size > 8:
                 self._summary_font_size -= 1
                 self._run_summary_js(f"setFontSize({self._summary_font_size})")
 
     def _zoom_reset(self):
         idx = self.view_stack.currentIndex()
-        if idx == 1:
+        if idx == 2:
             self._viewer_font_size = 13
             self._chat_font_size = 13
             self._run_viewer_js("setFontSize(13)")
             self._run_chat_js("setFontSize(13)")
-        elif idx == 2:
+        elif idx == 1:
             self._summary_font_size = 13
             self._run_summary_js("setFontSize(13)")
 
@@ -953,6 +1016,17 @@ class NotebookTab(QWidget):
         )
         if idx == 1 and self._summary_page_ready and self._summary_view_dirty:
             self._rebuild_summary_view()
+
+    def _toggle_chat_panel(self):
+        """Q&A 버튼 클릭 시 채팅 패널 펼침/접힘 토글"""
+        sizes = self._content_splitter.sizes()
+        total = sum(sizes)
+        if total == 0:
+            return
+        if sizes[1] == 0:
+            self._content_splitter.setSizes([total * 58 // 100, total * 42 // 100])
+        else:
+            self._content_splitter.setSizes([total, 0])
 
     def _set_context_mode(self, mode: str):
         """채팅 컨텍스트 모드 전환 ('summary' | 'full')."""
@@ -1027,6 +1101,7 @@ class NotebookTab(QWidget):
     def set_cache_dir(self, path: str):
         self._cache_dir = path
         self.chat_input.set_history_file(Path(path) / "notebook_chat_input_history.json")
+        self._history_cache = NotebookChatCache(path, "notebook_chat_history.json")
 
     def _summary_cache_path(self) -> Path:
         return Path(self._cache_dir) / "summaries.json"
@@ -1147,8 +1222,8 @@ class NotebookTab(QWidget):
             self._render_outline(nb)
             self._render_notebook(nb)
             self._switch_view(0)
-            # 노트북 전환 시 채팅 초기화
-            self._on_clear_chat()
+            # 노트북 전환 시 해당 노트북의 대화 이력 복원
+            self._restore_notebook_chat(nb)
 
     # ── 요약 생성 ────────────────────────────────────────────────────────────
 
@@ -1199,6 +1274,76 @@ class NotebookTab(QWidget):
 
         # 선택된 셀 가져오기 (비동기 JS 콜백)
         self._run_viewer_js("getSelectedCells()", lambda result: self._on_cells_selected(result, question))
+
+    def _on_word_graph_requested(self, word: str):
+        """더블클릭 + Ctrl+W로 선택된 단어의 연관 관계 분석 요청"""
+        if self._is_streaming or not word or not self._current_nb:
+            return
+        question = (
+            f"`{word}` 의 연관 관계 분석\n\n"
+            f"`{word}` 를 중심으로 노트북 전체 흐름에서의 연관 관계를 설명해 주세요.\n\n"
+            f"분석 방식:\n"
+            f"- `{word}` 가 노트북에서 **처음 등장하는 지점**을 찾아 시작점으로 삼습니다\n"
+            f"- `{word}` 가 중간에 등장한다면, 그것과 연결된 코드를 역으로 거슬러 올라가 **진짜 시작점**을 찾습니다\n"
+            f"- `{word}` 가 마지막에 등장한다면, 그것을 만들어낸 코드를 역추적하여 **처음부터** 설명합니다\n"
+            f"- 항상 **코드의 처음 시작점 → `{word}` 관련 중간 과정 → 최종 결과**의 흐름으로 설명합니다\n"
+            f"- **같은 클래스·모듈·인터페이스에 속하거나 같은 데이터 구조를 다루는 형제 함수/변수**도 반드시 포함합니다\n"
+            f"  (예: `search`를 분석할 때 같은 메모리 객체를 다루는 `put`, `get`, `delete` 등도 연관 관계에 포함)\n"
+            f"- 직접 호출 관계뿐 아니라 **공통 컨텍스트(같은 객체 인스턴스, 같은 데이터, 같은 목적)**로 연결된 코드도 포함합니다\n"
+            f"- 관련 변수·함수들의 연결 관계를 포함하여 전체 데이터 흐름을 빠짐없이 보여주세요\n"
+            f"- **연관 관계는 반드시 화살표(→) 또는 Mermaid flowchart로 시각화**해 주세요\n"
+            f"  (관계가 단순하면 화살표, 복잡하거나 분기·병합이 있으면 Mermaid flowchart 사용)"
+        )
+        self._run_viewer_js(
+            "getSelectedCells()",
+            lambda result: self._on_cells_selected(result, question)
+        )
+
+    def _on_define_requested(self, word: str):
+        """더블클릭 + Ctrl+D로 선택된 단어의 Python 정의/문법 설명 요청"""
+        if self._is_streaming or not word or not self._current_nb:
+            return
+        question = (
+            f"`{word}` 정의 및 Python 문법 설명\n\n"
+            f"**`{word}`** 의 정의와 Python 문법을 설명해 주세요.\n\n"
+            f"다음 항목을 포함하세요:\n"
+            f"- **정의**: `{word}` 가 무엇인지 한 문장으로 설명\n"
+            f"- **Python 문법**: 선언/사용 방법 (코드 예시 포함)\n"
+            f"- **주요 특징**: 언제, 왜 사용하는지\n"
+            f"- **노트북 내 사용 예**: 현재 노트북에서 `{word}` 가 어떻게 사용되고 있는지"
+        )
+        self._run_viewer_js(
+            "getSelectedCells()",
+            lambda result: self._on_cells_selected(result, question)
+        )
+
+    def _on_explain_requested(self, text: str):
+        """텍스트 선택 + Ctrl+S로 선택된 내용을 단계별로 상세 설명 요청"""
+        if self._is_streaming or not text or not self._current_nb:
+            return
+        question = (
+            f"선택된 내용 단계별 상세 설명\n\n"
+            f"다음 내용을 노트북의 문맥 안에서 **아주 자세하게, 단계별(step-by-step)로** 설명해 주세요:\n\n"
+            f"```\n{text}\n```\n\n"
+            f"설명 형식:\n"
+            f"- **Step 1 — 개요**: 이 코드/문장이 전체 흐름에서 어떤 역할을 하는지\n"
+            f"- **Step 2 — 구성 요소 분석**: 각 부분(키워드·함수·변수·연산자 등)의 의미를 하나씩 분해\n"
+            f"- **Step 3 — 실행 순서**: 코드라면 실행되는 순서를 줄 단위로 추적\n"
+            f"- **Step 4 — 입력과 출력**: 무엇을 받아서 무엇을 반환/생성하는지\n"
+            f"- **Step 5 — 노트북 문맥**: 앞뒤 셀과의 연결 — 이 부분이 왜 이 위치에 있는지\n"
+            f"- **Step 6 — 핵심 포인트**: 처음 보는 사람이 놓치기 쉬운 점, 주의사항"
+        )
+        self._run_viewer_js(
+            "getSelectedCells()",
+            lambda result: self._on_cells_selected(result, question)
+        )
+
+    def _on_paste_to_input(self, text: str):
+        """선택된 텍스트를 채팅 입력창에 삽입"""
+        if not text:
+            return
+        self.chat_input.insertPlainText(text)
+        self.chat_input.setFocus()
 
     def _on_cells_selected(self, result, question: str):
         """viewer JS에서 선택된 셀 데이터를 받은 후 처리"""
@@ -1295,11 +1440,74 @@ class NotebookTab(QWidget):
         self.notebook_chat_stop.emit()
 
     def _on_clear_chat(self):
-        """채팅 초기화"""
+        """채팅 초기화 — 현재 노트북의 자동 이력도 삭제."""
         self._chat_history.clear()
         self._last_chat_question = ""
         self._run_chat_js("clearChat()")
         self._restore_chat_btn()
+        if self._history_cache and self._current_nb:
+            self._history_cache.delete_notebook(self._current_nb)
+
+    def _restore_notebook_chat(self, nb: str):
+        """노트북 전환 시 해당 노트북의 저장된 대화 이력을 복원."""
+        if self._is_streaming:
+            self._restore_chat_btn()
+
+        self._chat_history.clear()
+        self._last_chat_question = ""
+
+        if not self._chat_page_ready:
+            self._pending_restore_nb = nb
+            return
+
+        self._run_chat_js("clearChat()")
+
+        if not self._history_cache:
+            return
+
+        entries = self._history_cache.get_notebook(nb)
+        if not entries:
+            return
+
+        # Cached Responses Tab에 저장된 항목 ID 집합 (alreadyCached 판정용)
+        cached_ids: set[str] = set()
+        cached_responses = NotebookChatCache(self._cache_dir)
+        for nb_entries in cached_responses.get_all().values():
+            for e in nb_entries:
+                eid = e.get("id")
+                if eid:
+                    cached_ids.add(eid)
+
+        for entry in entries:
+            question = entry.get("question") or ""
+            answer   = entry.get("answer") or ""
+            msg_id   = entry.get("id") or str(uuid.uuid4())
+            cell_indices = entry.get("cell_indices") or []
+
+            if not question or not answer:
+                continue
+
+            self._run_chat_js(f"appendUserMessage({json.dumps(question)})")
+            already_cached = msg_id in cached_ids
+            self._run_chat_js(
+                f"appendFinishedAiMessage("
+                f"{json.dumps(answer)}, "
+                f"{json.dumps(msg_id)}, "
+                f"{'true' if already_cached else 'false'})"
+            )
+
+            self._chat_history.append({"role": "user", "content": question})
+            self._chat_history.append({"role": "assistant", "content": answer})
+
+            self._recent_messages[msg_id] = {
+                "nb": nb,
+                "question": question,
+                "answer": answer,
+                "cell_indices": cell_indices,
+            }
+
+        while len(self._recent_messages) > 100:
+            self._recent_messages.pop(next(iter(self._recent_messages)))
 
     # ── STT (음성 입력) ───────────────────────────────────────────────────────
 
@@ -1373,14 +1581,25 @@ class NotebookTab(QWidget):
         self._chat_history.append({"role": "assistant", "content": answer})
 
         # 저장 버튼 클릭 시 조회할 수 있도록 메시지 캐시
+        nb = self._pending_nb_name or self._current_nb
         self._recent_messages[msg_id] = {
-            "nb": self._pending_nb_name or self._current_nb,
+            "nb": nb,
             "question": question,
             "answer": answer,
             "cell_indices": list(self._pending_cell_indices),
         }
         if len(self._recent_messages) > 100:
             self._recent_messages.pop(next(iter(self._recent_messages)))
+
+        # 자동 이력 저장 (per-notebook persistent history)
+        if self._history_cache and question and answer:
+            self._history_cache.add(
+                nb,
+                question,
+                answer,
+                list(self._pending_cell_indices),
+                entry_id=msg_id,
+            )
 
         self._last_chat_question = ""
         self._pending_nb_name = ""
@@ -1459,6 +1678,8 @@ class NotebookTab(QWidget):
             self._render_outline(new_nbs[0])
             self._render_notebook(new_nbs[0])
             self._switch_view(0)
+            # 초기 노트북의 대화 이력 복원 (페이지 준비 전이면 지연 처리)
+            self._restore_notebook_chat(new_nbs[0])
 
         self._rebuild_summary_view()
 
@@ -1495,8 +1716,8 @@ class NotebookTab(QWidget):
         self.progress_bar.hide()
         self.stop_btn.hide()
         self.status_label.setText("✅ 요약 생성 완료")
-        # 대기 중인 채팅이 없을 때만 요약 보기로 전환
-        if not self._pending_chat_question:
+        # 대기 중인 채팅이 없고 스트리밍 중이 아닐 때만 요약 보기로 전환
+        if not self._pending_chat_question and not self._is_streaming:
             self._switch_view(1)
 
     def on_error(self, msg: str):
@@ -1512,8 +1733,17 @@ class NotebookTab(QWidget):
             [c for c in self._cells if c["notebook"] == nb_name],
             key=lambda x: x["cell_idx"]
         )
+        nb_path = self._get_nb_path(nb_name)
+        if nb_path:
+            base_url = QUrl.fromLocalFile(str(Path(nb_path).parent)).toString() + "/"
+            self._run_viewer_js(f"setNotebookBaseDir({json.dumps(base_url)})")
         cells_json = json.dumps([
-            {"cell_idx": c["cell_idx"], "cell_type": c["cell_type"], "source": c["source"]}
+            {
+                "cell_idx": c["cell_idx"],
+                "cell_type": c["cell_type"],
+                "source": c["source"],
+                **({"attachments": c["attachments"]} if c.get("attachments") else {}),
+            }
             for c in nb_cells
         ], ensure_ascii=False)
         self._run_viewer_js(f"loadCells({cells_json})")

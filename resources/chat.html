@@ -366,6 +366,10 @@ marked.setOptions({
   gfm: true
 });
 
+function fixMdSpaces(md) {
+  return md.replace(/\*\*[ \t]+((?:[^\n*]|\*(?!\*))+?)[ \t]+\*\*/g, '**$1**');
+}
+
 const container = document.getElementById('chat-container');
 let currentAiBubble = null;   // 활성 스트리밍 AI 버블의 .content div
 let streamingBuffer = '';      // 스트리밍 중 누적된 마크다운 텍스트
@@ -611,7 +615,7 @@ function startAiMessage() {
 /** 스트리밍 버퍼를 marked.js로 렌더링 + 커서 표시 */
 function renderStreamingBuffer() {
   if (!currentAiBubble) return;
-  currentAiBubble.innerHTML = marked.parse(streamingBuffer) + '<span class="cursor"></span>';
+  currentAiBubble.innerHTML = marked.parse(fixMdSpaces(streamingBuffer)) + '<span class="cursor"></span>';
   currentAiBubble.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
     hljs.highlightElement(el);
   });
@@ -624,7 +628,7 @@ function finishAiMessage(messageId) {
   if (!currentAiBubble) return;
   var rawMd = streamingBuffer;
   var bubbleDiv = currentAiBubble.closest('.bubble-ai');
-  currentAiBubble.innerHTML = marked.parse(rawMd);
+  currentAiBubble.innerHTML = marked.parse(fixMdSpaces(rawMd));
   currentAiBubble.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
     hljs.highlightElement(el);
   });
@@ -642,7 +646,7 @@ function finishAiMessage(messageId) {
 function appendFinishedAiMessage(text, messageId, alreadyCached) {
   const msg = document.createElement('div');
   msg.className = 'msg msg-ai';
-  const rendered = marked.parse(text);
+  const rendered = marked.parse(fixMdSpaces(text));
   msg.innerHTML =
     '<div class="bubble bubble-ai">' +
       '<div class="msg-label">\uD83E\uDD16 AI 튜터</div>' +

@@ -155,14 +155,6 @@ class CachedResponsesTab(QWidget):
         layout.setContentsMargins(12, 12, 12, 8)
         layout.setSpacing(6)
 
-        title = QLabel("💾  캐시 응답")
-        title.setStyleSheet(_TITLE_STYLE)
-        layout.addWidget(title)
-
-        info = QLabel("저장한 AI 응답을 탐색·삭제합니다. 채팅·노트북 셀 Q&A에서 💾 버튼으로 저장.")
-        info.setStyleSheet(_SUB_STYLE)
-        layout.addWidget(info)
-
         self._inner_tabs = QTabWidget()
         self._inner_tabs.setStyleSheet(
             "QTabWidget::pane { border: 1px solid #2a3045; border-radius: 6px; "

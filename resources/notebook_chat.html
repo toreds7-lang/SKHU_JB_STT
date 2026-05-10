@@ -312,9 +312,83 @@ marked.setOptions({
   breaks: true, gfm: true
 });
 
+function fixMdSpaces(md) {
+  return md.replace(/\*\*[ \t]+((?:[^\n*]|\*(?!\*))+?)[ \t]+\*\*/g, '**$1**');
+}
+
 var container = document.getElementById('chat-container');
 var currentAiBubble = null;
 var streamingBuffer = '';
+var currentDblWord = '';  // 더블클릭으로 선택된 단어
+
+// ── 한국어 조사 제거 ─────────────────────────────────────────
+function stripKoreanParticles(word) {
+  var particles = [
+    '에서는','에서도','에서의','으로부터','으로서는','으로써','으로서',
+    '이라는','라는','이라고','라고','이라서','라서','이어서','여서',
+    '이므로','므로','에게서','한테서','로부터',
+    '에서','에게','한테','으로','로서','로써',
+    '이라','라','이나','나','이며','며','까지','부터',
+    '에','만','도','는','은','이','가','을','를','의','들'
+  ];
+  for (var i = 0; i < particles.length; i++) {
+    if (word.endsWith(particles[i])) {
+      var stripped = word.slice(0, word.length - particles[i].length);
+      if (stripped.length > 0) return stripped;
+    }
+  }
+  return word;
+}
+
+document.addEventListener('dblclick', function() {
+  var sel = window.getSelection();
+  var word = sel ? sel.toString().trim() : '';
+  if (word) currentDblWord = stripKoreanParticles(word);
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && (e.key === 'w' || e.key === 'W')) {
+    e.preventDefault();
+    if (currentDblWord) {
+      console.log('__WORD_GRAPH__:' + currentDblWord);
+    }
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && (e.key === 'd' || e.key === 'D')) {
+    e.preventDefault();
+    var sel = window.getSelection();
+    var selWord = sel ? sel.toString().trim() : '';
+    if (selWord) selWord = stripKoreanParticles(selWord);
+    var word = selWord || currentDblWord;
+    if (word) {
+      console.log('__DEFINE__:' + word);
+    }
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && (e.key === 's' || e.key === 'S')) {
+    e.preventDefault();
+    var sel = window.getSelection();
+    var selText = sel ? sel.toString().trim() : '';
+    if (selText) {
+      console.log('__EXPLAIN__:' + JSON.stringify(selText));
+    }
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && (e.key === 'p' || e.key === 'P')) {
+    e.preventDefault();
+    var sel = window.getSelection();
+    var selText = sel ? sel.toString() : '';
+    if (selText) {
+      console.log('__PASTE_INPUT__:' + JSON.stringify(selText));
+    }
+  }
+});
 
 function escapeHtml(text) {
   var div = document.createElement('div');
@@ -434,13 +508,49 @@ function markCached(messageId, isCached) {
   }
 }
 
+// ── Mermaid 노드 라벨 줄바꿈 헬퍼 ──────────────────────────────
+function _wrapMermaidText(text, maxLen) {
+  if (text.length <= maxLen) return text;
+  var words = text.split(' ');
+  var result = '';
+  var line = '';
+  for (var i = 0; i < words.length; i++) {
+    var candidate = line ? line + ' ' + words[i] : words[i];
+    if (candidate.length > maxLen && line) {
+      result += (result ? '<br/>' : '') + line;
+      line = words[i];
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) result += (result ? '<br/>' : '') + line;
+  return result;
+}
+
+function _wrapMermaidLabels(src) {
+  var MAX = 14;
+  src = src.replace(/\["([^"<>]+?)"\]/g, function(m, t) {
+    return '["' + _wrapMermaidText(t, MAX) + '"]';
+  });
+  src = src.replace(/\("([^"<>]+?)"\)/g, function(m, t) {
+    return '("' + _wrapMermaidText(t, MAX) + '")';
+  });
+  src = src.replace(/\[([^\[\]"<>]{3,}?)\]/g, function(m, t) {
+    return '[' + _wrapMermaidText(t, MAX) + ']';
+  });
+  src = src.replace(/\(([^\(\)"<>]{3,}?)\)/g, function(m, t) {
+    return '(' + _wrapMermaidText(t, MAX) + ')';
+  });
+  return src;
+}
+
 // ── Mermaid 다이어그램 렌더링 ─────────────────────────────────
 function renderMermaid(root) {
   if (!window.mermaid) return;
   var nodes = root.querySelectorAll('.mermaid:not([data-processed])');
   if (!nodes.length) return;
   nodes.forEach(function(el) {
-    var code = el.textContent;
+    var code = _wrapMermaidLabels(el.textContent);
     var id = 'mermaid-' + Math.random().toString(36).slice(2);
     el.setAttribute('data-processed', 'true');
 
@@ -537,7 +647,7 @@ function startAiMessage() {
 
 function renderStreamingBuffer() {
   if (!currentAiBubble) return;
-  currentAiBubble.innerHTML = marked.parse(streamingBuffer) + '<span class="cursor"></span>';
+  currentAiBubble.innerHTML = marked.parse(fixMdSpaces(streamingBuffer)) + '<span class="cursor"></span>';
   currentAiBubble.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
     hljs.highlightElement(el);
   });
@@ -549,7 +659,7 @@ function finishAiMessage(messageId) {
   if (!currentAiBubble) return;
   var rawMd = streamingBuffer;
   var bubbleDiv = currentAiBubble.closest('.bubble-ai');
-  currentAiBubble.innerHTML = marked.parse(rawMd);
+  currentAiBubble.innerHTML = marked.parse(fixMdSpaces(rawMd));
   currentAiBubble.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
     hljs.highlightElement(el);
   });
@@ -568,7 +678,7 @@ function appendFinishedAiMessage(text, messageId, alreadyCached) {
   msg.innerHTML =
     '<div class="bubble bubble-ai">' +
       '<div class="msg-label">\ud83e\udd16 AI \ud29c\ud130</div>' +
-      '<div class="content">' + marked.parse(text) + '</div>' +
+      '<div class="content">' + marked.parse(fixMdSpaces(text)) + '</div>' +
     '</div>';
   container.appendChild(msg);
   msg.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {

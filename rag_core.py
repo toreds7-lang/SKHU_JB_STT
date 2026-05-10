@@ -195,13 +195,16 @@ def parse_notebook(path: str) -> list[dict]:
         source = cell.source.strip()
         if not source:
             continue
-        cells.append({
+        cell_dict = {
             "cell_idx": idx,
             "cell_type": cell.cell_type,
             "source": source,
             "notebook": Path(path).stem,
             "notebook_path": path,
-        })
+        }
+        if cell.cell_type == "markdown" and hasattr(cell, "attachments") and cell.attachments:
+            cell_dict["attachments"] = dict(cell.attachments)
+        cells.append(cell_dict)
     return cells
 
 
@@ -1018,7 +1021,9 @@ def load_notebook_chat_prompt() -> str:
         "- 선택된 셀의 코드/마크다운 내용을 정확하게 분석합니다\n"
         "- 코드 설명 시 단계별로 명확하게 설명합니다\n"
         "- 필요 시 개선된 코드 예시를 제공합니다\n"
-        "- 노트북 요약 컨텍스트를 활용하여 전체 맥락에서 답변합니다\n\n"
+        "- 노트북 요약 컨텍스트를 활용하여 전체 맥락에서 답변합니다\n"
+        "- 변수·함수의 연관 관계를 설명할 때는 반드시 화살표(→) 또는 Mermaid flowchart(```mermaid ... ```)로 시각화합니다\n"
+        "  (관계가 단순하면 화살표, 복잡하거나 분기·병합이 있으면 Mermaid flowchart 사용)\n\n"
         "규칙:\n"
         "1. 주어진 셀 내용과 요약만을 근거로 답변합니다\n"
         "2. 답변은 한국어로 작성합니다\n"

@@ -339,20 +339,147 @@ marked.setOptions({
   breaks: true, gfm: true
 });
 
+function fixMdSpaces(md) {
+  return md.replace(/\*\*[ \t]+((?:[^\n*]|\*(?!\*))+?)[ \t]+\*\*/g, '**$1**');
+}
+
 // ── State ────────────────────────────────────────────────────
 var cellsData = [];       // [{cell_idx, cell_type, source}, ...]
 var lastCheckedIdx = -1;  // for shift-click range selection
+var currentDblWord = '';  // 더블클릭으로 선택된 단어
 
 function copyViaConsole(text) {
   console.log("__COPY__:" + text);
 }
 
+// ── 한국어 조사 제거 ─────────────────────────────────────────
+function stripKoreanParticles(word) {
+  var particles = [
+    '에서는','에서도','에서의','으로부터','으로서는','으로써','으로서',
+    '이라는','라는','이라고','라고','이라서','라서','이어서','여서',
+    '이므로','므로','에게서','한테서','로부터',
+    '에서','에게','한테','으로','로서','로써',
+    '이라','라','이나','나','이며','며','까지','부터',
+    '에','만','도','는','은','이','가','을','를','의','들'
+  ];
+  for (var i = 0; i < particles.length; i++) {
+    if (word.endsWith(particles[i])) {
+      var stripped = word.slice(0, word.length - particles[i].length);
+      if (stripped.length > 0) return stripped;
+    }
+  }
+  return word;
+}
+
+document.addEventListener('dblclick', function() {
+  var sel = window.getSelection();
+  var word = sel ? sel.toString().trim() : '';
+  if (word) currentDblWord = stripKoreanParticles(word);
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && (e.key === 'w' || e.key === 'W')) {
+    e.preventDefault();
+    if (currentDblWord) {
+      console.log('__WORD_GRAPH__:' + currentDblWord);
+    }
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && (e.key === 'd' || e.key === 'D')) {
+    e.preventDefault();
+    var sel = window.getSelection();
+    var selWord = sel ? sel.toString().trim() : '';
+    if (selWord) selWord = stripKoreanParticles(selWord);
+    var word = selWord || currentDblWord;
+    if (word) {
+      console.log('__DEFINE__:' + word);
+    }
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && (e.key === 's' || e.key === 'S')) {
+    e.preventDefault();
+    var sel = window.getSelection();
+    var selText = sel ? sel.toString().trim() : '';
+    if (selText) {
+      console.log('__EXPLAIN__:' + JSON.stringify(selText));
+    }
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && (e.key === 'p' || e.key === 'P')) {
+    e.preventDefault();
+    var sel = window.getSelection();
+    var selText = sel ? sel.toString() : '';
+    if (selText) {
+      console.log('__PASTE_INPUT__:' + JSON.stringify(selText));
+    }
+  }
+});
+
 // ── Mermaid render helper ────────────────────────────────────
+// ── Notebook base directory for resolving relative image paths ───
+var notebookBaseDir = '';
+
+function setNotebookBaseDir(url) {
+  notebookBaseDir = url;
+}
+
+function fixImagePaths(container) {
+  if (!notebookBaseDir) return;
+  container.querySelectorAll('img').forEach(function(img) {
+    var src = img.getAttribute('src');
+    if (src && !src.startsWith('http') && !src.startsWith('file:') && !src.startsWith('data:')) {
+      src = src.replace(/^\.\//, '');
+      img.setAttribute('src', notebookBaseDir + src);
+    }
+  });
+}
+
+function _wrapMermaidText(text, maxLen) {
+  if (text.length <= maxLen) return text;
+  var words = text.split(' ');
+  var result = '';
+  var line = '';
+  for (var i = 0; i < words.length; i++) {
+    var candidate = line ? line + ' ' + words[i] : words[i];
+    if (candidate.length > maxLen && line) {
+      result += (result ? '<br/>' : '') + line;
+      line = words[i];
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) result += (result ? '<br/>' : '') + line;
+  return result;
+}
+
+function _wrapMermaidLabels(src) {
+  var MAX = 14;
+  src = src.replace(/\["([^"<>]+?)"\]/g, function(m, t) {
+    return '["' + _wrapMermaidText(t, MAX) + '"]';
+  });
+  src = src.replace(/\("([^"<>]+?)"\)/g, function(m, t) {
+    return '("' + _wrapMermaidText(t, MAX) + '")';
+  });
+  src = src.replace(/\[([^\[\]"<>]{3,}?)\]/g, function(m, t) {
+    return '[' + _wrapMermaidText(t, MAX) + ']';
+  });
+  src = src.replace(/\(([^\(\)"<>]{3,}?)\)/g, function(m, t) {
+    return '(' + _wrapMermaidText(t, MAX) + ')';
+  });
+  return src;
+}
+
 function renderMermaid(root) {
   if (!window.mermaid) return;
   var nodes = root.querySelectorAll('.mermaid:not([data-processed])');
   nodes.forEach(function(el) {
-    var code = el.textContent;
+    var code = _wrapMermaidLabels(el.textContent);
     var id = 'mermaid-' + Math.random().toString(36).slice(2);
     mermaid.render(id, code).then(function(result) {
       el.innerHTML = result.svg;
@@ -566,7 +693,17 @@ function loadCells(cellsJson) {
       hljs.highlightElement(code);
     } else {
       body.className = 'cell-body md-body';
-      body.innerHTML = marked.parse(cell.source);
+      var mdSrc = cell.source;
+      if (cell.attachments) {
+        mdSrc = mdSrc.replace(/\(attachment:([^)]+)\)/g, function(match, fname) {
+          var att = cell.attachments[fname];
+          if (!att) return match;
+          var mime = Object.keys(att)[0];
+          return '(data:' + mime + ';base64,' + att[mime] + ')';
+        });
+      }
+      body.innerHTML = marked.parse(fixMdSpaces(mdSrc));
+      fixImagePaths(body);
       body.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
         hljs.highlightElement(el);
       });

@@ -332,6 +332,10 @@ marked.setOptions({
   gfm: true
 });
 
+function fixMdSpaces(md) {
+  return md.replace(/\*\*[ \t]+((?:[^\n*]|\*(?!\*))+?)[ \t]+\*\*/g, '**$1**');
+}
+
 var root = document.getElementById('root');
 
 function escapeHtml(s) {
@@ -347,7 +351,7 @@ function renderMarkdownInto(el, md) {
     el.innerHTML = '';
     return false;
   }
-  el.innerHTML = marked.parse(text);
+  el.innerHTML = marked.parse(fixMdSpaces(text));
   el.querySelectorAll('pre code:not(.hljs)').forEach(function(codeEl) {
     try { hljs.highlightElement(codeEl); } catch(e) {}
   });

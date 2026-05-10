@@ -23,13 +23,14 @@ def _now_iso() -> str:
 class NotebookChatCache:
     FILENAME = "notebook_chat_cache.json"
 
-    def __init__(self, cache_dir: str):
+    def __init__(self, cache_dir: str, filename: str | None = None):
         self._cache_dir = cache_dir
+        self._filename = filename or self.FILENAME
         self._lock = Lock()
 
     @property
     def path(self) -> Path:
-        return Path(self._cache_dir) / self.FILENAME
+        return Path(self._cache_dir) / self._filename
 
     def _read(self) -> dict:
         if not self.path.exists():
@@ -119,6 +120,12 @@ class NotebookChatCache:
     def get_all(self) -> dict:
         with self._lock:
             return self._read()
+
+    def get_notebook(self, notebook: str) -> list:
+        """특정 노트북의 항목 리스트를 반환. 없으면 빈 리스트."""
+        with self._lock:
+            data = self._read()
+            return list(data.get(notebook, []))
 
 
 class ChatCache:

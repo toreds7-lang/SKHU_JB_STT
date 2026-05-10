@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QLabel
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
 
 from ui.config_panel   import ConfigPanel
 from ui.chat_tab       import ChatTab
@@ -56,6 +56,8 @@ class MainWindow(QMainWindow):
         self._summary_worker: SummaryWorker | None = None
         self._nb_chat_worker: NotebookChatWorker | None = None
         self._last_config:    dict = {}
+        self._config_collapsed: bool = False
+        self._config_panel_width: int = 260
         self._init_ui()
         self._connect_signals()
         self._propagate_stt_language(self.config_panel.get_config().get("stt_language", "ko"))
@@ -77,11 +79,11 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # ── 좌측: 설정 패널 ───────────────────────────────────────────────────
         self.config_panel = ConfigPanel()
-        splitter.addWidget(self.config_panel)
+        self._splitter.addWidget(self.config_panel)
 
         # ── 우측: 탭 위젯 ─────────────────────────────────────────────────────
         self.tab_widget = QTabWidget()
@@ -102,7 +104,7 @@ class MainWindow(QMainWindow):
         self.cached_tab   = CachedResponsesTab()
 
         self.tab_widget.addTab(self.notebook_tab, "📓  노트북 뷰어")
-        self.tab_widget.addTab(self.chat_tab,     "💬  채팅")
+        self.tab_widget.addTab(self.chat_tab,     "💬  RAG 채팅")
         self.tab_widget.addTab(self.docs_tab,     "📄  문서 탐색")
         self.tab_widget.addTab(self.graph_tab,    "🕸️  그래프 탐색")
         self.tab_widget.addTab(self.dir_tab,      "📁  디렉토리")
@@ -111,9 +113,9 @@ class MainWindow(QMainWindow):
         self.tab_widget.tabBar().setTabVisible(2, False)  # 문서 탐색
         self.tab_widget.tabBar().setTabVisible(3, False)  # 그래프 탐색
 
-        splitter.addWidget(self.tab_widget)
-        splitter.setSizes([260, 1140])
-        main_layout.addWidget(splitter)
+        self._splitter.addWidget(self.tab_widget)
+        self._splitter.setSizes([260, 1140])
+        main_layout.addWidget(self._splitter)
 
         # ── 상태 바 ───────────────────────────────────────────────────────────
         self.statusBar().showMessage("⚠️  RAG 시스템을 초기화해 주세요. ← 좌측 설정 패널에서 구성 후 빌드하세요.")
@@ -145,6 +147,26 @@ class MainWindow(QMainWindow):
         self.chat_tab.cache_updated.connect(self.cached_tab.refresh)
         self.cached_tab.entry_deleted.connect(self.notebook_tab.on_cache_entry_deleted)
         self.cached_tab.entry_deleted.connect(self.chat_tab.on_cache_entry_deleted)
+
+        QShortcut(QKeySequence("Ctrl+B"), self).activated.connect(self._toggle_config_panel)
+        QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self.notebook_tab._list_splitter.toggle)
+
+    def _toggle_config_panel(self):
+        if self._config_collapsed:
+            self.config_panel.setMinimumWidth(220)
+            self.config_panel.setMaximumWidth(320)
+            total = sum(self._splitter.sizes())
+            self._splitter.setSizes([self._config_panel_width, total - self._config_panel_width])
+            self._config_collapsed = False
+        else:
+            current = self._splitter.sizes()[0]
+            if current > 0:
+                self._config_panel_width = current
+            self.config_panel.setMinimumWidth(0)
+            self.config_panel.setMaximumWidth(0)
+            total = sum(self._splitter.sizes())
+            self._splitter.setSizes([0, total])
+            self._config_collapsed = True
 
     def _propagate_stt_language(self, language: str):
         self.chat_tab.set_stt_language(language)
