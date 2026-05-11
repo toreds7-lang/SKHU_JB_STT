@@ -12,6 +12,7 @@ import glob
 import hashlib
 import pickle
 import operator
+import shutil
 from pathlib import Path
 from typing import Any, TypedDict, Annotated, Optional
 
@@ -389,12 +390,25 @@ def build_rag_system(nb_dir: str, embedding_base_url: str,
     faiss_path = os.path.join(cache_path, "faiss_index")
     if progress_callback:
         progress_callback("FAISS 인덱스 구축 중…")
-    if os.path.exists(faiss_path):
-        vector_store = FAISS.load_local(faiss_path, embeddings,
-                                        allow_dangerous_deserialization=True)
+    os.makedirs(cache_path, exist_ok=True)
+    _faiss_valid = (
+        os.path.exists(os.path.join(faiss_path, "index.faiss")) and
+        os.path.exists(os.path.join(faiss_path, "index.pkl"))
+    )
+    if _faiss_valid:
+        try:
+            vector_store = FAISS.load_local(faiss_path, embeddings,
+                                            allow_dangerous_deserialization=True)
+        except Exception:
+            # 손상된 인덱스 → 삭제 후 재빌드
+            shutil.rmtree(faiss_path, ignore_errors=True)
+            vector_store = FAISS.from_documents(docs, embeddings)
+            vector_store.save_local(faiss_path)
     else:
+        # 불완전한 디렉토리가 남아 있을 수 있으므로 정리 후 재빌드
+        if os.path.exists(faiss_path):
+            shutil.rmtree(faiss_path, ignore_errors=True)
         vector_store = FAISS.from_documents(docs, embeddings)
-        os.makedirs(cache_path, exist_ok=True)
         vector_store.save_local(faiss_path)
 
     vector_retriever = vector_store.as_retriever(search_kwargs={"k": 5})

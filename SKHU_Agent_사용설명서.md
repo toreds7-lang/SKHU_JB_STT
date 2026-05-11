@@ -256,7 +256,3 @@ FORCE_WORKERS=3
 
 질문 / 피드백 → **jongbum3.park@sk.com**
 
-> 슬라이드 PDF 변환:
-> ```
-> marp SKHU_Agent_사용설명서.md --pdf
-> ```
