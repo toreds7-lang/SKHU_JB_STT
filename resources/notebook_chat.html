@@ -194,8 +194,19 @@ body {
   margin: 0.5em 0;
   overflow-x: auto;
   text-align: center;
+  position: relative;
 }
 .mermaid-wrapper svg { max-width: 100%; height: auto; }
+.mermaid-save-btn {
+  position: absolute; top: 6px; right: 6px;
+  background: #2a3045; color: #94a3b8; border: 1px solid #3a4055;
+  border-radius: 4px; padding: 2px 7px; font-size: 10px;
+  font-family: "Pretendard","Malgun Gothic",sans-serif;
+  cursor: pointer; opacity: 0; transition: opacity 0.15s;
+}
+.mermaid-wrapper:hover .mermaid-save-btn { opacity: 1; }
+.mermaid-save-btn:hover { background: #3a4055; color: #e2e8f0; }
+.mermaid-save-btn.saved { color: #4ade80; border-color: #4ade80; }
 .mermaid-error {
   color: #f87171;
   font-size: 11px;
@@ -545,6 +556,33 @@ function _wrapMermaidLabels(src) {
 }
 
 // ── Mermaid 다이어그램 렌더링 ─────────────────────────────────
+function _attachMermaidSaveBtn(el) {
+  var wrapper = el.closest('.mermaid-wrapper');
+  if (!wrapper || wrapper.querySelector('.mermaid-save-btn')) return;
+  var btn = document.createElement('button');
+  btn.className = 'mermaid-save-btn';
+  btn.textContent = 'SVG';
+  btn.title = 'SVG로 저장';
+  btn.addEventListener('click', function() {
+    var svgEl = el.querySelector('svg');
+    if (!svgEl) return;
+    var clone = svgEl.cloneNode(true);
+    if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    if (!clone.getAttribute('xmlns:xlink')) clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+    var svgText = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
+    var b64 = btoa(unescape(encodeURIComponent(svgText)));
+    var name = 'mermaid-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    console.log('__SAVE_SVG__:' + name + '|' + b64);
+    btn.textContent = '✓ 저장됨';
+    btn.classList.add('saved');
+    setTimeout(function() {
+      btn.textContent = 'SVG';
+      btn.classList.remove('saved');
+    }, 1500);
+  });
+  wrapper.appendChild(btn);
+}
+
 function renderMermaid(root) {
   if (!window.mermaid) return;
   var nodes = root.querySelectorAll('.mermaid:not([data-processed])');
@@ -580,6 +618,7 @@ function renderMermaid(root) {
         return;
       }
       el.innerHTML = result.svg;
+      _attachMermaidSaveBtn(el);
     }).catch(function(err) {
       hideWrapper();
     });

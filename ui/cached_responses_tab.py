@@ -25,6 +25,7 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage
 
 from cache_store import NotebookChatCache, ChatCache
+from ui._svg_save import _SAVE_SVG_PREFIX, handle_save_svg_payload
 
 
 if getattr(sys, "frozen", False):
@@ -42,6 +43,11 @@ class _ExternalLinkPage(QWebEnginePage):
             QDesktopServices.openUrl(url)
             return False
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+    def javaScriptConsoleMessage(self, level, message, line, source):
+        if message.startswith(_SAVE_SVG_PREFIX):
+            handle_save_svg_payload(message[len(_SAVE_SVG_PREFIX):])
+            return
 
 
 _TITLE_STYLE = "color: #e2e8f0; font-size: 14px; font-weight: 700;"

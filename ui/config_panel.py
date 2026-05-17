@@ -113,7 +113,7 @@ class ConfigPanel(QWidget):
         self.nb_dir_edit.textChanged.connect(self._sync_cache_dir)
 
         lay.addWidget(_FieldLabel("캐시 디렉토리"))
-        self.cache_dir_edit = QLineEdit(".rag_cache")
+        self.cache_dir_edit = QLineEdit(".work_cache")
         lay.addWidget(self.cache_dir_edit)
 
         # ── LLM 설정 ──────────────────────────────────────────────────────────
@@ -246,9 +246,11 @@ class ConfigPanel(QWidget):
     def _sync_cache_dir(self, nb_dir_text: str):
         text = nb_dir_text.strip().rstrip("/\\")
         if text:
+            basename = os.path.basename(text) or text
+            cache_name = f".{basename}_cache"
             parent = os.path.dirname(text)
             self.cache_dir_edit.setText(
-                os.path.join(parent, ".rag_cache") if parent else ".rag_cache"
+                os.path.join(parent, cache_name) if parent else cache_name
             )
 
     def _on_build_clicked(self):
@@ -315,7 +317,7 @@ class ConfigPanel(QWidget):
         self.llm_model_edit.setText(os.getenv("LLM_MODEL") or s.value("llm_model", "gpt-4o-mini"))
         self.emb_url_edit.setText(s.value("emb_url", os.getenv("EMBEDDING_BASE_URL", "")))
         self.emb_model_edit.setText(os.getenv("EMBEDDING_MODEL") or s.value("emb_model", "text-embedding-ada-002"))
-        self.cache_dir_edit.setText(s.value("cache_dir", ".rag_cache"))
+        self.cache_dir_edit.setText(s.value("cache_dir", ".work_cache"))
         mode = s.value("retrieval_mode", "all")
         idx = self.retrieval_combo.findData(mode)
         if idx >= 0:

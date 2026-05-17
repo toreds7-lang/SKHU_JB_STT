@@ -24,6 +24,7 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage
 
 from cache_store import NotebookChatCache
+from ui._svg_save import _SAVE_SVG_PREFIX, handle_save_svg_payload
 
 
 # ── 스타일 상수 ──────────────────────────────────────────────────────────────
@@ -188,6 +189,10 @@ class _LinkPage(QWebEnginePage):
     def javaScriptConsoleMessage(self, level, message, line, source):
         if message.startswith("__COPY__:"):
             QApplication.clipboard().setText(message[len("__COPY__:"):])
+            return
+        if message.startswith(_SAVE_SVG_PREFIX):
+            handle_save_svg_payload(message[len(_SAVE_SVG_PREFIX):])
+            return
 
 
 class _ViewerLinkPage(_LinkPage):
@@ -261,11 +266,43 @@ class _ChatLinkPage(_LinkPage):
         super().javaScriptConsoleMessage(level, message, line, source)
 
 
+class _SummaryLinkPage(_LinkPage):
+    """요약 보기 전용 — Ctrl+W/D/S/P 단축키 콘솔 메시지를 NotebookTab으로 전달."""
+
+    def __init__(self, tab, parent=None):
+        super().__init__(parent)
+        self._tab = tab
+
+    def javaScriptConsoleMessage(self, level, message, line, source):
+        if message.startswith("__WORD_GRAPH__:"):
+            self._tab._on_word_graph_requested(message[len("__WORD_GRAPH__:"):])
+            return
+        if message.startswith("__DEFINE__:"):
+            self._tab._on_define_requested(message[len("__DEFINE__:"):])
+            return
+        if message.startswith("__EXPLAIN__:"):
+            try:
+                text = json.loads(message[len("__EXPLAIN__:"):])
+            except Exception:
+                text = message[len("__EXPLAIN__:"):]
+            self._tab._on_explain_requested(text)
+            return
+        if message.startswith("__PASTE_INPUT__:"):
+            try:
+                text = json.loads(message[len("__PASTE_INPUT__:"):])
+            except Exception:
+                text = message[len("__PASTE_INPUT__:"):]
+            self._tab._on_paste_to_input(text)
+            return
+        super().javaScriptConsoleMessage(level, message, line, source)
+
+
 # ── 자동 확장 텍스트 입력 (ChatTab과 동일 패턴) ──────────────────────────────
 
 class _AutoExpandingEdit(QPlainTextEdit):
     """Enter 전송, Shift+Enter 줄바꿈. 최대 4줄까지 자동 확장."""
     returnPressed = pyqtSignal()
+    shortcut_triggered = pyqtSignal(str, str)  # (key: 'w'|'d'|'s'|'p', selected_text)
 
     _MIN_HEIGHT = 36
     _MAX_HEIGHT = 144
@@ -386,6 +423,20 @@ class _AutoExpandingEdit(QPlainTextEdit):
                 self._draft = ""
             c = self.textCursor(); c.movePosition(c.MoveOperation.End); self.setTextCursor(c)
             return
+
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            _key_map = {
+                Qt.Key.Key_W: 'w',
+                Qt.Key.Key_D: 'd',
+                Qt.Key.Key_S: 's',
+                Qt.Key.Key_P: 'p',
+            }
+            if key in _key_map:
+                selected = self.textCursor().selectedText().strip()
+                if selected:
+                    event.accept()
+                    self.shortcut_triggered.emit(_key_map[key], selected)
+                    return
 
         super().keyPressEvent(event)
 
@@ -582,7 +633,7 @@ class NotebookTab(QWidget):
 
         # --- [1] 요약 보기 ---
         self.summary_web = QWebEngineView()
-        self.summary_web.setPage(_LinkPage(self.summary_web))
+        self.summary_web.setPage(_SummaryLinkPage(self, self.summary_web))
         self.summary_web.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         if getattr(sys, "frozen", False):
             _base = Path(sys._MEIPASS)
@@ -889,6 +940,7 @@ class NotebookTab(QWidget):
             "QPlainTextEdit:focus { border-color: #4f8ef7; }"
         )
         self.chat_input.returnPressed.connect(self._on_chat_send)
+        self.chat_input.shortcut_triggered.connect(self._on_input_shortcut)
         input_row.addWidget(self.chat_input)
 
         self.mic_btn = STTButton()
@@ -1337,6 +1389,17 @@ class NotebookTab(QWidget):
             "getSelectedCells()",
             lambda result: self._on_cells_selected(result, question)
         )
+
+    def _on_input_shortcut(self, key: str, text: str):
+        """입력창에서 텍스트 선택 후 Ctrl+W/D/S/P 단축키 처리"""
+        if key == 'w':
+            self._on_word_graph_requested(text)
+        elif key == 'd':
+            self._on_define_requested(text)
+        elif key == 's':
+            self._on_explain_requested(text)
+        elif key == 'p':
+            self._on_paste_to_input(text)
 
     def _on_paste_to_input(self, text: str):
         """선택된 텍스트를 채팅 입력창에 삽입"""

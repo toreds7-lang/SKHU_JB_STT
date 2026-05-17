@@ -155,8 +155,19 @@ body {
   margin: 0.5em 0;
   overflow-x: auto;
   text-align: center;
+  position: relative;
 }
 .mermaid-wrapper svg { max-width: 100%; height: auto; }
+.mermaid-save-btn {
+  position: absolute; top: 6px; right: 6px;
+  background: #2a3045; color: #94a3b8; border: 1px solid #3a4055;
+  border-radius: 4px; padding: 2px 7px; font-size: 10px;
+  font-family: "Pretendard","Malgun Gothic",sans-serif;
+  cursor: pointer; opacity: 0; transition: opacity 0.15s;
+}
+.mermaid-wrapper:hover .mermaid-save-btn { opacity: 1; }
+.mermaid-save-btn:hover { background: #3a4055; color: #e2e8f0; }
+.mermaid-save-btn.saved { color: #4ade80; border-color: #4ade80; }
 .mermaid-error {
   color: #f87171;
   font-size: 11px;
@@ -331,13 +342,147 @@ const mermaidExtension = {
 };
 marked.use(mermaidExtension);
 
+// ── 선택 단어 추적 & 단축키 ──────────────────────────────────
+var currentDblWord = '';
+
+function stripKoreanParticles(word) {
+  var particles = [
+    '에서는','에서도','에서의','으로부터','으로서는','으로써','으로서',
+    '이라는','라는','이라고','라고','이라서','라서','이어서','여서',
+    '이므로','므로','에게서','한테서','로부터',
+    '에서','에게','한테','으로','로서','로써',
+    '이라','라','이나','나','이며','며','까지','부터',
+    '에','만','도','는','은','이','가','을','를','의','들'
+  ];
+  for (var i = 0; i < particles.length; i++) {
+    if (word.endsWith(particles[i])) {
+      var stripped = word.slice(0, word.length - particles[i].length);
+      if (stripped.length > 0) return stripped;
+    }
+  }
+  return word;
+}
+
+document.addEventListener('dblclick', function() {
+  var sel = window.getSelection();
+  var word = sel ? sel.toString().trim() : '';
+  if (word) currentDblWord = stripKoreanParticles(word);
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && (e.key === 'w' || e.key === 'W')) {
+    e.preventDefault();
+    if (currentDblWord) {
+      console.log('__WORD_GRAPH__:' + currentDblWord);
+    }
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && (e.key === 'd' || e.key === 'D')) {
+    e.preventDefault();
+    var sel = window.getSelection();
+    var selWord = sel ? sel.toString().trim() : '';
+    if (selWord) selWord = stripKoreanParticles(selWord);
+    var word = selWord || currentDblWord;
+    if (word) {
+      console.log('__DEFINE__:' + word);
+    }
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && (e.key === 's' || e.key === 'S')) {
+    e.preventDefault();
+    var sel = window.getSelection();
+    var selText = sel ? sel.toString().trim() : '';
+    if (selText) {
+      console.log('__EXPLAIN__:' + JSON.stringify(selText));
+    }
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && (e.key === 'p' || e.key === 'P')) {
+    e.preventDefault();
+    var sel = window.getSelection();
+    var selText = sel ? sel.toString() : '';
+    if (selText) {
+      console.log('__PASTE_INPUT__:' + JSON.stringify(selText));
+    }
+  }
+});
+
+// ── Mermaid 노드 라벨 줄바꿈 헬퍼 ──────────────────────────────
+function _wrapMermaidText(text, maxLen) {
+  if (text.length <= maxLen) return text;
+  var words = text.split(' ');
+  var result = '';
+  var line = '';
+  for (var i = 0; i < words.length; i++) {
+    var candidate = line ? line + ' ' + words[i] : words[i];
+    if (candidate.length > maxLen && line) {
+      result += (result ? '<br/>' : '') + line;
+      line = words[i];
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) result += (result ? '<br/>' : '') + line;
+  return result;
+}
+
+function _wrapMermaidLabels(src) {
+  var MAX = 14;
+  src = src.replace(/\["([^"<>]+?)"\]/g, function(m, t) {
+    return '["' + _wrapMermaidText(t, MAX) + '"]';
+  });
+  src = src.replace(/\("([^"<>]+?)"\)/g, function(m, t) {
+    return '("' + _wrapMermaidText(t, MAX) + '")';
+  });
+  src = src.replace(/\[([^\[\]"<>]{3,}?)\]/g, function(m, t) {
+    return '[' + _wrapMermaidText(t, MAX) + ']';
+  });
+  src = src.replace(/\(([^\(\)"<>]{3,}?)\)/g, function(m, t) {
+    return '(' + _wrapMermaidText(t, MAX) + ')';
+  });
+  return src;
+}
+
 // ── Mermaid 다이어그램 렌더링 ─────────────────────────────────
+function _attachMermaidSaveBtn(el) {
+  var wrapper = el.closest('.mermaid-wrapper');
+  if (!wrapper || wrapper.querySelector('.mermaid-save-btn')) return;
+  var btn = document.createElement('button');
+  btn.className = 'mermaid-save-btn';
+  btn.textContent = 'SVG';
+  btn.title = 'SVG로 저장';
+  btn.addEventListener('click', function() {
+    var svgEl = el.querySelector('svg');
+    if (!svgEl) return;
+    var clone = svgEl.cloneNode(true);
+    if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    if (!clone.getAttribute('xmlns:xlink')) clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+    var svgText = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
+    var b64 = btoa(unescape(encodeURIComponent(svgText)));
+    var name = 'mermaid-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    console.log('__SAVE_SVG__:' + name + '|' + b64);
+    btn.textContent = '✓ 저장됨';
+    btn.classList.add('saved');
+    setTimeout(function() {
+      btn.textContent = 'SVG';
+      btn.classList.remove('saved');
+    }, 1500);
+  });
+  wrapper.appendChild(btn);
+}
+
 function renderMermaid(root) {
   if (!window.mermaid) return;
   var nodes = root.querySelectorAll('.mermaid:not([data-processed])');
   if (!nodes.length) return;
   nodes.forEach(function(el) {
-    var code = el.textContent;
+    var code = _wrapMermaidLabels(el.textContent);
     var id = 'mermaid-' + Math.random().toString(36).slice(2);
     el.setAttribute('data-processed', 'true');
 
@@ -370,6 +515,7 @@ function renderMermaid(root) {
         return;
       }
       el.innerHTML = result.svg;
+      _attachMermaidSaveBtn(el);
     }).catch(function(err) {
       hideWrapper();
     });

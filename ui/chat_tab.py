@@ -153,6 +153,8 @@ class _AutoExpandingEdit(QPlainTextEdit):
         super().keyPressEvent(event)
 
 
+from ui._svg_save import _SAVE_SVG_PREFIX, handle_save_svg_payload
+
 _COPY_PREFIX = "__COPY__:"
 _SAVE_PREFIX = "__SAVE_CHAT__:"
 _UNSAVE_PREFIX = "__UNSAVE_CHAT__:"
@@ -182,6 +184,9 @@ class _ExternalLinkPage(QWebEnginePage):
             return
         if message.startswith(_UNSAVE_PREFIX) and self._unsave_handler:
             self._unsave_handler(message[len(_UNSAVE_PREFIX):])
+            return
+        if message.startswith(_SAVE_SVG_PREFIX):
+            handle_save_svg_payload(message[len(_SAVE_SVG_PREFIX):])
             return
         # 다른 콘솔 메시지는 무시 (디버그용으로 super 호출 가능)
 
