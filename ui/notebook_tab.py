@@ -943,16 +943,22 @@ class NotebookTab(QWidget):
         self.chat_input.shortcut_triggered.connect(self._on_input_shortcut)
         input_row.addWidget(self.chat_input)
 
+        button_group = QHBoxLayout()
+        button_group.setContentsMargins(0, 0, 0, 0)
+        button_group.setSpacing(4)
+
         self.mic_btn = STTButton()
         self.mic_btn.record_start.connect(self._on_mic_start)
         self.mic_btn.record_stop.connect(self._on_mic_stop)
-        input_row.addWidget(self.mic_btn)
+        button_group.addWidget(self.mic_btn)
 
         self.send_btn = QPushButton("전송")
         self.send_btn.setStyleSheet(_SEND_BTN_STYLE)
         self.send_btn.setFixedWidth(60)
         self.send_btn.clicked.connect(self._on_chat_send)
-        input_row.addWidget(self.send_btn)
+        button_group.addWidget(self.send_btn)
+
+        input_row.addLayout(button_group)
 
         chat_layout.addLayout(input_row)
 
