@@ -416,3 +416,266 @@ class SummaryWorker(QThread):
 
         except Exception as e:
             self.error_signal.emit(str(e))
+
+
+class WikiBuildWorker(QThread):
+    """Wiki 지식 그래프 생성 워커 (4단계 파이프라인)"""
+    progress_signal  = pyqtSignal(int, str)   # (percent 0-100, status_message)
+    page_created     = pyqtSignal(str)        # slug of newly created page
+    finished_signal  = pyqtSignal(dict)       # graph_data {"nodes": [...], "edges": [...]}
+    error_signal     = pyqtSignal(str)
+
+    def __init__(self, llm, cache_dir: str, nb_dir: str, *, overwrite: bool = False):
+        super().__init__()
+        self.llm        = llm
+        self.cache_dir  = cache_dir
+        self.nb_dir     = nb_dir
+        self.overwrite  = overwrite
+        self._stopped   = False
+
+    def stop(self) -> None:
+        self._stopped = True
+
+    def run(self):
+        try:
+            import json
+            from pathlib import Path
+            from rag_core import (
+                generate_notebook_wiki_page,
+                extract_concepts_from_notebook,
+                generate_concept_wiki_page,
+                build_wiki_graph,
+                save_wiki_index,
+                append_wiki_log,
+                load_wiki_concept_prompt,
+                load_summary_prompt,
+                prepare_notebook_summary_prompt,
+                load_notebooks,
+                get_file_md5,
+                get_summary_prompt_hash,
+                get_dir_hash,
+                should_rebuild_wiki,
+                load_wiki_graph_cache,
+                load_wiki_metadata,
+                save_wiki_metadata,
+                save_wiki_graph_cache,
+                slug,
+            )
+            from langchain_core.messages import HumanMessage, SystemMessage
+
+            wiki_dir = Path(self.cache_dir) / "wiki"
+            wiki_dir.mkdir(parents=True, exist_ok=True)
+
+            # ── Check cache and skip rebuild if not needed ──────────────────────
+            if not self.overwrite and not should_rebuild_wiki(self.cache_dir, self.nb_dir):
+                self.progress_signal.emit(10, "💾 캐시에서 Wiki 로드 중…")
+                cached_graph = load_wiki_graph_cache(self.cache_dir)
+                if cached_graph:
+                    self.progress_signal.emit(
+                        100,
+                        f"✅ 캐시 로드 완료 — 노드 {len(cached_graph.get('nodes', []))}개, 엣지 {len(cached_graph.get('edges', []))}개"
+                    )
+                    self.finished_signal.emit(cached_graph)
+                    return
+            else:
+                if self.overwrite:
+                    self.progress_signal.emit(5, "🔄 덮어쓰기 모드로 Wiki 재생성 중…")
+                else:
+                    self.progress_signal.emit(5, "🔄 변경된 노트북 감지 — Wiki 재생성 중…")
+
+            # ── Phase 1: Load or Generate summaries ────────────────────────────
+            self.progress_signal.emit(5, "📖 요약 준비 중…")
+            summaries_path = Path(self.cache_dir) / "summaries.json"
+
+            if summaries_path.exists():
+                # 기존 summaries.json 로드
+                self.progress_signal.emit(5, "📖 summaries.json 로드 중…")
+                with open(summaries_path, encoding="utf-8") as f:
+                    summaries = json.load(f)
+            else:
+                # summaries.json 없으면 자동 생성
+                self.progress_signal.emit(5, "📝 노트북 요약 자동 생성 중…")
+
+                # 노트북 파싱
+                cells = load_notebooks(self.nb_dir, progress_callback=None)
+                if not cells:
+                    self.error_signal.emit("노트북을 찾을 수 없습니다.")
+                    return
+
+                # 노트북별로 그룹핑
+                nb_dict = {}
+                for cell in cells:
+                    nb_name = cell.get("notebook", "")
+                    if nb_name not in nb_dict:
+                        nb_dict[nb_name] = []
+                    nb_dict[nb_name].append(cell)
+
+                summaries = {}
+                sys_prompt = load_summary_prompt()
+                prompt_hash = get_summary_prompt_hash()
+                nb_names_to_summarize = list(nb_dict.keys())
+
+                for i, nb_name in enumerate(nb_names_to_summarize):
+                    if self._stopped:
+                        return
+
+                    try:
+                        pct = 5 + int((i + 1) / len(nb_names_to_summarize) * 15)
+                        self.progress_signal.emit(pct, f"요약 생성: {nb_name}")
+
+                        user_prompt = prepare_notebook_summary_prompt(nb_name, nb_dict[nb_name])
+                        response = self.llm.invoke([
+                            SystemMessage(content=sys_prompt),
+                            HumanMessage(content=user_prompt),
+                        ])
+
+                        # 노트북 파일 경로 찾기
+                        nb_path = ""
+                        for cell in nb_dict[nb_name]:
+                            nb_path = cell.get("notebook_path", "")
+                            if nb_path:
+                                break
+
+                        file_hash = get_file_md5(nb_path) if nb_path else ""
+
+                        summaries[nb_name] = {
+                            "hash": file_hash,
+                            "prompt_hash": prompt_hash,
+                            "summary": response.content.strip(),
+                        }
+                    except Exception as e:
+                        self.progress_signal.emit(
+                            5 + int((i + 1) / len(nb_names_to_summarize) * 15),
+                            f"요약 생성 실패: {nb_name} ({str(e)[:30]})"
+                        )
+                        summaries[nb_name] = {
+                            "hash": "",
+                            "prompt_hash": prompt_hash,
+                            "summary": f"(요약 생성 실패: {str(e)[:100]})",
+                        }
+
+                # summaries.json 저장
+                Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
+                with open(summaries_path, "w", encoding="utf-8") as f:
+                    json.dump(summaries, f, ensure_ascii=False, indent=2)
+
+            # summaries: {nb_name: {hash, prompt_hash, summary}}
+            nb_names = list(summaries.keys())
+
+            # Build notebook wiki pages (no LLM)
+            self.progress_signal.emit(20, "📑 노트북 페이지 생성 중…")
+            for i, nb_name in enumerate(nb_names):
+                if self._stopped:
+                    return
+                summary_text = summaries[nb_name].get("summary", "")
+                path = generate_notebook_wiki_page(
+                    nb_name, summary_text, wiki_dir, overwrite=self.overwrite
+                )
+                self.page_created.emit(slug(nb_name))
+                pct = 20 + int((i + 1) / len(nb_names) * 15)  # 20→35%
+                self.progress_signal.emit(pct, f"노트북 페이지 생성: {nb_name}")
+                append_wiki_log(wiki_dir, "notebook_page", nb_name)
+
+            # ── Phase 2: Extract concepts (one LLM call per notebook) ────────────
+            self.progress_signal.emit(35, "🔍 개념 추출 중…")
+            concept_prompt = load_wiki_concept_prompt()
+            concept_map = {}  # concept_name → [nb_names that reference it]
+
+            for i, nb_name in enumerate(nb_names):
+                if self._stopped:
+                    return
+                summary_text = summaries[nb_name].get("summary", "")
+                concepts = extract_concepts_from_notebook(
+                    self.llm, nb_name, summary_text, concept_prompt
+                )
+                for concept in concepts:
+                    concept_map.setdefault(concept, []).append(nb_name)
+                pct = 35 + int((i + 1) / len(nb_names) * 30)  # 35→65%
+                self.progress_signal.emit(pct, f"개념 추출: {nb_name} → {len(concepts)}개")
+
+            # Deduplicate: keep concepts appearing in ≥1 notebook, limit to 40 total
+            # Sort by frequency (most cross-referenced first)
+            concept_names = sorted(
+                concept_map.keys(),
+                key=lambda c: len(concept_map[c]), reverse=True
+            )[:40]
+
+            # ── Phase 3: Generate concept wiki pages (one LLM call per concept) ──
+            self.progress_signal.emit(65, "📝 개념 위키 페이지 생성 중…")
+            existing_slugs = {slug(nb) for nb in nb_names}  # for valid [[link]] targets
+            existing_slugs.update(slug(c) for c in concept_names)
+
+            for i, concept in enumerate(concept_names):
+                if self._stopped:
+                    return
+                related_nbs = concept_map[concept]
+                path = generate_concept_wiki_page(
+                    self.llm, concept, related_nbs, summaries, wiki_dir,
+                    existing_slugs, overwrite=self.overwrite
+                )
+                if path:
+                    self.page_created.emit(slug(concept))
+                    append_wiki_log(wiki_dir, "concept_page", concept)
+                pct = 65 + int((i + 1) / len(concept_names) * 25)  # 65→90%
+                self.progress_signal.emit(pct, f"개념 페이지: {concept}")
+
+            # ── Phase 4: Build graph JSON ─────────────────────────────────────────
+            self.progress_signal.emit(90, "🗺️ 그래프 JSON 빌드 중…")
+            graph_data = build_wiki_graph(wiki_dir)
+            save_wiki_index(wiki_dir, graph_data["nodes"])
+
+            # Save metadata and cache
+            dir_hash = get_dir_hash(self.nb_dir)
+            save_wiki_metadata(self.cache_dir, self.nb_dir, dir_hash)
+            save_wiki_graph_cache(self.cache_dir, graph_data)
+
+            self.progress_signal.emit(
+                100,
+                f"✅ 완료 — 노드 {len(graph_data['nodes'])}개, 엣지 {len(graph_data['edges'])}개"
+            )
+            self.finished_signal.emit(graph_data)
+
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
+
+class WikiQAWorker(QThread):
+    """Wiki Q&A 스트리밍 워커"""
+    chunk_received  = pyqtSignal(str)    # 토큰 단위 스트리밍
+    finished_signal = pyqtSignal(str)    # 전체 응답
+    error_signal    = pyqtSignal(str)
+
+    def __init__(self, llm, question: str, cache_dir: str):
+        super().__init__()
+        self.llm       = llm
+        self.question  = question
+        self.cache_dir = cache_dir
+        self._stopped  = False
+
+    def stop(self) -> None:
+        self._stopped = True
+
+    def run(self):
+        try:
+            from pathlib import Path
+            from rag_core import wiki_qa
+
+            wiki_dir = Path(self.cache_dir) / "wiki"
+
+            # 스트리밍 콜백
+            def stream_callback(chunk: str):
+                if not self._stopped:
+                    self.chunk_received.emit(chunk)
+
+            answer = wiki_qa(
+                self.llm,
+                self.question,
+                wiki_dir,
+                max_context_pages=5,
+                stream_callback=stream_callback,
+            )
+
+            self.finished_signal.emit(answer)
+
+        except Exception as e:
+            self.error_signal.emit(str(e))

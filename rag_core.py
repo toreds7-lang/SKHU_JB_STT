@@ -695,6 +695,74 @@ def get_dir_hash(nb_dir: str) -> str:
     return h.hexdigest()
 
 
+def get_wiki_metadata_path(cache_dir: str) -> Path:
+    """Wiki 메타데이터 파일 경로를 반환합니다."""
+    return Path(cache_dir) / "wiki_metadata.json"
+
+
+def get_wiki_graph_cache_path(cache_dir: str) -> Path:
+    """Wiki 그래프 캐시 파일 경로를 반환합니다."""
+    return Path(cache_dir) / "wiki_graph.json"
+
+
+def save_wiki_metadata(cache_dir: str, nb_dir: str, dir_hash: str) -> None:
+    """Wiki 메타데이터를 저장합니다."""
+    from datetime import datetime
+    metadata = {
+        "nb_dir": nb_dir,
+        "dir_hash": dir_hash,
+        "timestamp": datetime.now().isoformat(),
+    }
+    meta_path = get_wiki_metadata_path(cache_dir)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+
+def load_wiki_metadata(cache_dir: str) -> dict[str, str] | None:
+    """Wiki 메타데이터를 로드합니다. 없으면 None."""
+    meta_path = get_wiki_metadata_path(cache_dir)
+    if meta_path.exists():
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+
+def save_wiki_graph_cache(cache_dir: str, graph_data: dict) -> None:
+    """Wiki 그래프 데이터를 캐시합니다."""
+    cache_path = get_wiki_graph_cache_path(cache_dir)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(graph_data, f, ensure_ascii=False, indent=2)
+
+
+def load_wiki_graph_cache(cache_dir: str) -> dict[str, Any] | None:
+    """Wiki 그래프 캐시를 로드합니다. 없으면 None."""
+    cache_path = get_wiki_graph_cache_path(cache_dir)
+    if cache_path.exists():
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+
+def should_rebuild_wiki(cache_dir: str, nb_dir: str) -> bool:
+    """Wiki 재구축이 필요한지 확인합니다.
+    노트북 디렉터리 해시가 변경되었으면 True."""
+    metadata = load_wiki_metadata(cache_dir)
+    if not metadata:
+        return True  # 메타데이터 없으면 재구축 필요
+
+    current_hash = get_dir_hash(nb_dir)
+    cached_hash = metadata.get("dir_hash", "")
+    return current_hash != cached_hash
+
+
 def format_cell_preview(doc: Document, max_len: int = 300) -> str:
     text = doc.page_content
     return text[:max_len] + ("…" if len(text) > max_len else "")
@@ -1090,3 +1158,390 @@ def prepare_notebook_chat_prompt(
     parts.append(f"\n--- 질문 ---\n{question}")
 
     return "\n".join(parts)
+
+
+# ── Wiki 생성 (Knowledge Graph) ─────────────────────────────────────────────
+
+def slug(name: str) -> str:
+    """이름을 위키 파일명용 소문자 하이픈 슬러그로 변환.
+    예: 'LangGraph Memory' → 'langgraph-memory'"""
+    import re as _re
+    s = name.lower().strip()
+    s = _re.sub(r'[^a-z0-9가-힣\-_]', '-', s)
+    s = _re.sub(r'-+', '-', s).strip('-')
+    return s or "unknown"
+
+
+def extract_wiki_links(md_content: str) -> list[str]:
+    """마크다운 텍스트에서 [[slug]] 형태의 위키 링크를 모두 추출하여
+    slug 문자열 리스트로 반환합니다."""
+    return re.findall(r'\[\[([^\]]+)\]\]', md_content)
+
+
+def load_wiki_concept_prompt() -> str:
+    """prompts/wiki_concept_prompt.txt를 읽어 개념 추출 시스템 프롬프트를 반환합니다.
+    파일이 없으면 내장 기본값을 반환합니다."""
+    concept_prompt_path = Path("prompts/wiki_concept_prompt.txt")
+    if concept_prompt_path.exists():
+        return concept_prompt_path.read_text(encoding="utf-8").strip()
+
+    return (
+        "당신은 Jupyter Notebook 강의 자료에서 핵심 개념을 추출하는 전문가입니다.\n"
+        "주어진 노트북 요약에서 학습자가 이해해야 할 핵심 개념, 기술, 라이브러리, 알고리즘을 추출합니다.\n"
+        "규칙:\n"
+        "1. 개념은 5~8개 추출합니다\n"
+        "2. 구체적이고 검색 가능한 명칭을 사용합니다 (예: MemorySaver, FAISS, StateGraph)\n"
+        "3. 너무 일반적인 개념은 제외합니다 (예: Python, 함수, 변수)\n"
+        "4. 반드시 아래 JSON 형식으로만 응답합니다: {\"concepts\": [\"개념1\", \"개념2\", ...]}\n"
+        "\nJSON:"
+    )
+
+
+def append_wiki_log(wiki_dir: Path, action: str, detail: str) -> None:
+    """wiki_dir/log.md에 타임스탐프 감사 로그 항목을 추가합니다."""
+    from datetime import datetime
+    log_path = wiki_dir / "log.md"
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entry = f"- **{timestamp}** | {action} | {detail}\n"
+
+    if log_path.exists():
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(entry)
+    else:
+        header = "# Wiki Log\n\nAppend-only record of all wiki operations.\n\n"
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write(header + entry)
+
+
+def generate_notebook_wiki_page(
+    nb_name: str,
+    summary: str,
+    wiki_dir: Path,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """노트북 요약(summaries.json에서 읽은 텍스트)으로 노트북 위키 페이지를 생성합니다.
+    wiki_dir/<slug>.md 에 저장하고 Path를 반환합니다.
+    overwrite=False이면 파일이 이미 존재할 때 스킵합니다."""
+    from datetime import datetime
+
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+    page_slug = slug(nb_name)
+    page_path = wiki_dir / f"{page_slug}.md"
+
+    if page_path.exists() and not overwrite:
+        return page_path
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    content = f"""---
+type: notebook
+slug: {page_slug}
+label: {nb_name}
+---
+
+# {nb_name}
+
+**Summary**: {summary.split(chr(10))[0][:150]}…
+
+**Sources**: [[{page_slug}]]
+
+**Last updated**: {timestamp}
+
+---
+
+{summary}
+
+## Related pages
+
+(자동 생성됨)
+"""
+
+    page_path.write_text(content, encoding="utf-8")
+    return page_path
+
+
+def extract_concepts_from_notebook(
+    llm,
+    nb_name: str,
+    summary: str,
+    concept_prompt: str,
+) -> list[str]:
+    """단일 노트북 요약에서 핵심 개념 목록을 추출합니다.
+    반환값: 개념 이름 문자열 리스트 (예: ['MemorySaver', 'thread_id', ...])"""
+    import json as _json
+
+    user_msg = f"노트북 '{nb_name}'의 요약:\n\n{summary}"
+
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        response = llm.invoke([
+            SystemMessage(content=concept_prompt),
+            HumanMessage(content=user_msg),
+        ])
+
+        text = response.content.strip()
+        # JSON 객체 추출 (```json ... ``` 형식도 처리)
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+
+        parsed = _json.loads(text)
+        concepts = parsed.get("concepts", [])
+        return [c.strip() for c in concepts if isinstance(c, str)]
+    except Exception:
+        return []
+
+
+def generate_concept_wiki_page(
+    llm,
+    concept_name: str,
+    related_notebooks: list[str],
+    summaries: dict[str, str],
+    wiki_dir: Path,
+    existing_slugs: set[str],
+    *,
+    overwrite: bool = False,
+) -> Path | None:
+    """LLM을 호출하여 단일 개념 위키 페이지를 생성합니다.
+    related_notebooks의 요약을 컨텍스트로 주고, [[wiki-links]]를 포함한
+    마크다운을 wiki_dir/<slug>.md 에 저장합니다.
+    LLM 실패 시 None을 반환합니다."""
+    import re as _re
+    from datetime import datetime
+
+    page_slug = slug(concept_name)
+    page_path = wiki_dir / f"{page_slug}.md"
+
+    if page_path.exists() and not overwrite:
+        return page_path
+
+    # 관련 노트북 요약 컨텍스트 구성
+    context_parts = [f"개념: {concept_name}\n\n관련 노트북:\n"]
+    for nb_name in related_notebooks[:5]:  # 최대 5개
+        summary = summaries.get(nb_name, {}).get("summary", "")
+        if isinstance(summary, str):
+            context_parts.append(f"- {nb_name}: {summary[:200]}…\n")
+
+    context = "".join(context_parts)
+
+    prompt = (
+        f"아래 정보를 바탕으로 '{concept_name}' 개념에 대한 위키 페이지를 작성해 주세요.\n\n"
+        f"{context}\n\n"
+        f"위키 페이지 형식:\n"
+        f"# {{제목}}\n"
+        f"**Summary**: 한 줄 요약\n"
+        f"**Sources**: 관련 노트북을 [[슬러그]] 형식으로\n"
+        f"본문: 마크다운 형식\n"
+        f"## Related pages: [[다른-개념]] 형식으로 관련 개념 언급\n\n"
+        f"작성 규칙:\n"
+        f"1. [[...]] 형식의 위키링크만 사용하세요\n"
+        f"2. 유효한 위키링크는 이것들입니다: {', '.join(list(existing_slugs)[:10])}…\n"
+        f"3. 존재하지 않는 개념으로는 링크를 만들지 마세요\n"
+        f"4. 마크다운 형식을 준수하세요\n"
+        f"5. mermaid로 코드에 대한 flowchart를 그려주세요. 반드시 아래 규칙을 준수하세요:\n"
+        f"   - flowchart TD 형식 사용\n"
+        f"   - 노드 레이블에 괄호 ()를 포함하지 마세요 (예: A[\"label\"] 형식 사용)\n"
+        f"   - 특수문자, 따옴표는 노드 레이블 내부에 사용하지 마세요\n"
+        f"   - 노드 ID는 영문 알파벳만 사용 (A, B, C, D 등)"
+    )
+
+    try:
+        from langchain_core.messages import HumanMessage
+        response = llm.invoke([HumanMessage(content=prompt)])
+        content = response.content.strip()
+
+        # 유효하지 않은 위키링크 제거
+        def filter_links(match):
+            link_text = match.group(1)
+            return f"[[{link_text}]]" if link_text in existing_slugs else link_text
+
+        content = _re.sub(r'\[\[([^\]]+)\]\]', filter_links, content)
+
+        # 프론트매터 추가
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        full_content = f"""---
+type: concept
+slug: {page_slug}
+label: {concept_name}
+---
+
+{content}
+
+**Last updated**: {timestamp}
+"""
+
+        page_path.write_text(full_content, encoding="utf-8")
+        return page_path
+    except Exception as e:
+        print(f"Error generating concept page for {concept_name}: {e}")
+        return None
+
+
+def build_wiki_graph(wiki_dir: Path) -> dict:
+    """wiki_dir/*.md 파일들을 스캔하여 그래프 JSON을 빌드합니다.
+    노드: 각 페이지 (type=notebook|concept), 엣지: [[wiki-links]] 기반.
+    반환값:
+    {
+      'nodes': [{'id': str, 'label': str, 'type': str,
+                 'summary': str, 'content': str}],
+      'edges': [{'source': str, 'target': str}]
+    }"""
+    import re as _re
+
+    nodes = []
+    edges = []
+    node_ids = set()
+
+    # 모든 .md 파일 읽기 (index.md, log.md 제외)
+    for md_file in sorted(wiki_dir.glob("*.md")):
+        if md_file.name in ("index.md", "log.md"):
+            continue
+
+        try:
+            content = md_file.read_text(encoding="utf-8")
+
+            # 프론트매터 파싱
+            match = _re.match(r'^---\n(.*?)\n---', content, _re.DOTALL)
+            metadata = {}
+            if match:
+                fm_text = match.group(1)
+                for line in fm_text.split('\n'):
+                    if ':' in line:
+                        k, v = line.split(':', 1)
+                        metadata[k.strip()] = v.strip()
+
+            node_id = metadata.get("slug", slug(md_file.stem))
+            node_label = metadata.get("label", md_file.stem)
+            node_type = metadata.get("type", "concept")
+
+            # 요약 추출 (첫 200자)
+            summary_match = _re.search(r'\*\*Summary\*\*:\s*(.+?)(?:\n|$)', content)
+            summary = summary_match.group(1)[:150] if summary_match else ""
+
+            nodes.append({
+                "id": node_id,
+                "label": node_label,
+                "type": node_type,
+                "summary": summary,
+                "content": content,
+            })
+            node_ids.add(node_id)
+        except Exception as e:
+            print(f"Error processing {md_file.name}: {e}")
+
+    # 엣지 수집
+    for md_file in sorted(wiki_dir.glob("*.md")):
+        if md_file.name in ("index.md", "log.md"):
+            continue
+
+        try:
+            content = md_file.read_text(encoding="utf-8")
+            source_id = slug(md_file.stem)
+
+            # [[링크]] 추출
+            links = extract_wiki_links(content)
+            for target_id in links:
+                if target_id in node_ids:
+                    edges.append({"source": source_id, "target": target_id})
+        except Exception:
+            pass
+
+    return {"nodes": nodes, "edges": edges}
+
+
+def save_wiki_index(wiki_dir: Path, nodes: list[dict]) -> None:
+    """노드 리스트로부터 wiki_dir/index.md 를 생성합니다."""
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        "# Wiki Index",
+        "",
+        "Table of contents for all wiki pages.",
+        "",
+        "| Name | Type | Slug |",
+        "|------|------|------|",
+    ]
+
+    for node in sorted(nodes, key=lambda x: (x.get("type", ""), x.get("label", ""))):
+        label = node.get("label", "")
+        node_type = node.get("type", "")
+        node_id = node.get("id", "")
+        lines.append(f"| [[{node_id}]] | {node_type} | {node_id} |")
+
+    index_path = wiki_dir / "index.md"
+    index_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def wiki_qa(
+    llm,
+    question: str,
+    wiki_dir: Path,
+    max_context_pages: int = 5,
+    stream_callback: callable = None,
+) -> str:
+    """위키 컨텐츠를 컨텍스트로 사용해 LLM이 질문에 답변합니다.
+    BM25-style 키워드 매칭으로 관련 페이지를 선택합니다."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    # 모든 위키 페이지 로드
+    pages = {}
+    for md_file in wiki_dir.glob("*.md"):
+        if md_file.name in ("index.md", "log.md"):
+            continue
+        try:
+            content = md_file.read_text(encoding="utf-8")
+            pages[md_file.stem] = content
+        except Exception:
+            pass
+
+    if not pages:
+        return "위키 페이지를 찾을 수 없습니다. 먼저 Wiki를 생성해 주세요."
+
+    # 간단한 키워드 매칭으로 관련 페이지 선택
+    import re as _re
+    question_words = set(_re.findall(r'\b\w+\b', question.lower()))
+
+    scored_pages = []
+    for page_name, page_content in pages.items():
+        content_lower = page_content.lower()
+        score = sum(1 for word in question_words if word in content_lower)
+        if score > 0:
+            scored_pages.append((score, page_name, page_content))
+
+    scored_pages.sort(reverse=True)
+    context_pages = scored_pages[:max_context_pages]
+
+    context = "## 위키 정보\n\n"
+    for _, page_name, page_content in context_pages:
+        # 최대 500자까지
+        context += f"### {page_name}\n{page_content[:500]}\n\n"
+
+    system_prompt = (
+        "당신은 한국어 강의 자료 위키의 지식베이스를 기반으로 질문에 답변하는 AI입니다.\n"
+        "주어진 위키 컨텐츠 내에서만 답변하고, 없으면 모른다고 답하세요.\n"
+        "마크다운 형식을 사용하고, 출처를 명시하세요."
+    )
+
+    user_prompt = f"{context}\n## 질문\n{question}"
+
+    try:
+        if stream_callback:
+            # 스트리밍 모드
+            for chunk in llm.stream([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ]):
+                if hasattr(chunk, "content") and chunk.content:
+                    stream_callback(chunk.content)
+            return ""  # 스트리밍 완료, 합산은 호출자가 처리
+        else:
+            # 일반 모드
+            response = llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ])
+            return response.content.strip()
+    except Exception as e:
+        return f"오류: {str(e)}"
