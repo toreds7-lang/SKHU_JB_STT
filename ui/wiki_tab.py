@@ -225,6 +225,20 @@ class KnowledgeGraphTab(QWidget):
         )
         qa_layout.addWidget(self.qa_response, 1)
 
+        # Clear button
+        clear_row = QHBoxLayout()
+        clear_row.setContentsMargins(0, 0, 0, 0)
+        clear_row.addStretch()
+        self.qa_clear_btn = QPushButton("🗑 대화 초기화")
+        self.qa_clear_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #64748b; border: none; "
+            "font-size: 10px; padding: 2px 6px; }"
+            "QPushButton:hover { color: #94a3b8; }"
+        )
+        self.qa_clear_btn.clicked.connect(self._on_clear_qa)
+        clear_row.addWidget(self.qa_clear_btn)
+        qa_layout.addLayout(clear_row)
+
         return qa_widget
 
     def _connect_signals(self):
@@ -337,6 +351,11 @@ class KnowledgeGraphTab(QWidget):
         self.qa_response.setText("📝 응답 생성 중…")
 
         self.wiki_qa_requested.emit(question)
+
+    def _on_clear_qa(self) -> None:
+        """Clear Q&A conversation"""
+        self.qa_response.setText("")
+        self._qa_buffer = ""
 
     def _on_node_selected(self, node_data: dict) -> None:
         """Node clicked in graph"""
