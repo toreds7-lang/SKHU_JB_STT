@@ -6,6 +6,7 @@ D3.js 인터랙티브 그래프 + 노드 상세 + Q&A 패널
 import json
 from pathlib import Path
 
+from env_loader import get_resource_path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QPushButton, QLabel, QProgressBar, QPlainTextEdit,
@@ -119,7 +120,7 @@ class KnowledgeGraphTab(QWidget):
 
         # Right-Top: Node Detail Browser
         self.detail_browser = QWebEngineView()
-        node_html = Path(__file__).resolve().parent.parent / "resources" / "wiki_node.html"
+        node_html = get_resource_path("wiki_node.html")
         self.detail_browser.setUrl(QUrl.fromLocalFile(str(node_html)))
         self.detail_browser.installEventFilter(self)  # Ctrl+Wheel zoom
         v_splitter.addWidget(self.detail_browser)
@@ -377,7 +378,7 @@ class KnowledgeGraphTab(QWidget):
 
     def _load_graph_html(self, graph_data: dict) -> None:
         """Load knowledge_graph.html and inject data"""
-        html_path = Path(__file__).resolve().parent.parent / "resources" / "knowledge_graph.html"
+        html_path = get_resource_path("knowledge_graph.html")
         self.graph_view.setUrl(QUrl.fromLocalFile(str(html_path)))
 
         self._pending_graph_data = graph_data

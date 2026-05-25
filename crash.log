@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "D:\2026_Agent\SKHU_Agent\main.py", line 66, in <module>
-    from PyQt6.QtWidgets import QApplication
-ModuleNotFoundError: No module named 'PyQt6'

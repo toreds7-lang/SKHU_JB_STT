@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="js/d3.min.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #0d0f14;
+      color: #e2e8f0;
+      overflow: hidden;
+      font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    }
+
+    #graph-container {
+      width: 100vw;
+      height: 100vh;
+      position: relative;
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Node Styles */
+    .node-notebook {
+      fill: #4f8ef7;
+      stroke: #1d4ed8;
+      stroke-width: 1.5px;
+    }
+
+    .node-concept {
+      fill: #f97316;
+      stroke: #c2410c;
+      stroke-width: 1.5px;
+    }
+
+    .node text {
+      fill: #e2e8f0;
+      font-size: 11px;
+      pointer-events: none;
+      text-shadow: 0 0 3px #0d0f14;
+      text-anchor: middle;
+    }
+
+    .node circle:hover {
+      filter: brightness(1.3);
+      cursor: pointer;
+    }
+
+    .node.selected circle {
+      stroke: #fde68a;
+      stroke-width: 3px;
+    }
+
+    /* Link/Edge Styles */
+    .link {
+      stroke: #2a3045;
+      stroke-opacity: 0.6;
+      stroke-width: 1.5px;
+      fill: none;
+    }
+
+    .link.highlighted {
+      stroke: #4f8ef7;
+      stroke-opacity: 1;
+      stroke-width: 2px;
+    }
+
+    /* Tooltip */
+    #tooltip {
+      position: absolute;
+      background: #1e2330;
+      border: 1px solid #2a3045;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 12px;
+      color: #e2e8f0;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.15s;
+      max-width: 220px;
+      word-break: break-word;
+      z-index: 1000;
+    }
+
+    /* Legend */
+    #legend {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      background: #161922;
+      border: 1px solid #2a3045;
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 11px;
+      color: #94a3b8;
+    }
+
+    #legend-svg {
+      display: block;
+    }
+
+    #legend-text {
+      margin-top: 8px;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <div id="graph-container">
+    <svg id="graph-svg"></svg>
+  </div>
+
+  <div id="tooltip"></div>
+
+  <div id="legend">
+    <svg id="legend-svg" width="140" height="50">
+      <circle cx="12" cy="12" r="7" fill="#4f8ef7"/>
+      <text x="24" y="16" fill="#94a3b8" font-size="11">노트북</text>
+
+      <circle cx="12" cy="38" r="6" fill="#f97316"/>
+      <text x="24" y="42" fill="#94a3b8" font-size="11">개념</text>
+    </svg>
+  </div>
+
+  <script>
+    // ── Global State ──────────────────────────────────────────────────────────
+    let graphData = { nodes: [], edges: [] };
+    let simulation = null;
+    let svg = null;
+    let linkGroup = null;
+    let nodeGroup = null;
+    let selectedId = null;
+
+    // ── Entry point: Load graph data from Python ──────────────────────────────
+    function loadGraphData(data) {
+      graphData = data;
+      renderGraph();
+    }
+
+    // ── Highlight a specific node ─────────────────────────────────────────────
+    function highlightNode(id) {
+      if (!nodeGroup) return;
+      nodeGroup.selectAll(".node").classed("selected", d => d.id === id);
+    }
+
+    // ── Main Render Function ──────────────────────────────────────────────────
+    function renderGraph() {
+      const container = document.getElementById("graph-container");
+      const W = container.clientWidth;
+      const H = container.clientHeight;
+
+      // Clear previous
+      d3.select("#graph-svg").selectAll("*").remove();
+
+      svg = d3.select("#graph-svg");
+
+      // Defs: Arrow marker for directed edges
+      svg.append("defs").append("marker")
+        .attr("id", "arrow")
+        .attr("viewBox", "0 -5 10 10")
+        .attr("refX", 20)
+        .attr("refY", 0)
+        .attr("markerWidth", 6)
+        .attr("markerHeight", 6)
+        .attr("orient", "auto")
+        .append("path")
+        .attr("d", "M0,-5L10,0L0,5")
+        .attr("fill", "#4f8ef7");
+
+      // Zoom/Pan container
+      const zoomG = svg.append("g").attr("class", "zoom-group");
+
+      svg.call(
+        d3.zoom()
+          .scaleExtent([0.2, 4])
+          .on("zoom", e => zoomG.attr("transform", e.transform))
+      );
+
+      // Link and Node groups
+      linkGroup = zoomG.append("g").attr("class", "links");
+      nodeGroup = zoomG.append("g").attr("class", "nodes");
+
+      // Force simulation
+      simulation = d3.forceSimulation(graphData.nodes)
+        .force("link", d3.forceLink(graphData.edges)
+          .id(d => d.id)
+          .distance(120)
+        )
+        .force("charge", d3.forceManyBody().strength(-300))
+        .force("center", d3.forceCenter(W / 2, H / 2))
+        .force("collision", d3.forceCollide(30));
+
+      // Render links
+      const links = linkGroup.selectAll("line")
+        .data(graphData.edges)
+        .join("line")
+        .attr("class", "link")
+        .attr("marker-end", "url(#arrow)");
+
+      // Render nodes
+      const nodes = nodeGroup.selectAll(".node")
+        .data(graphData.nodes)
+        .join("g")
+        .attr("class", "node")
+        .call(
+          d3.drag()
+            .on("start", dragStart)
+            .on("drag", dragging)
+            .on("end", dragEnd)
+        );
+
+      // Node circles
+      nodes.append("circle")
+        .attr("r", d => d.type === "notebook" ? 14 : 10)
+        .attr("class", d => `node-${d.type}`);
+
+      // Node labels
+      nodes.append("text")
+        .attr("dy", d => d.type === "notebook" ? 26 : 22)
+        .attr("text-anchor", "middle")
+        .text(d => {
+          const max_len = 15;
+          return d.label.length > max_len ? d.label.slice(0, max_len - 1) + "…" : d.label;
+        });
+
+      // Node interactions
+      nodes.on("click", (event, d) => {
+        selectedId = d.id;
+        highlightNode(d.id);
+
+        // Signal Python via console.log protocol
+        const payload = {
+          id: d.id,
+          label: d.label,
+          type: d.type,
+          summary: d.summary || "",
+          content: d.content || ""
+        };
+        console.log("NODE_CLICK::" + JSON.stringify(payload));
+      });
+
+      // Tooltip on hover
+      const tooltip = document.getElementById("tooltip");
+      nodes.on("mouseover", (event, d) => {
+        tooltip.style.opacity = "1";
+        tooltip.innerHTML = `<b>${d.label}</b><br><span style="color:#94a3b8;font-size:11px">${d.summary || ""}</span>`;
+      }).on("mousemove", event => {
+        tooltip.style.left = (event.pageX + 12) + "px";
+        tooltip.style.top = (event.pageY - 10) + "px";
+      }).on("mouseout", () => {
+        tooltip.style.opacity = "0";
+      });
+
+      // Simulation tick handler
+      simulation.on("tick", () => {
+        links
+          .attr("x1", d => d.source.x)
+          .attr("y1", d => d.source.y)
+          .attr("x2", d => d.target.x)
+          .attr("y2", d => d.target.y);
+
+        nodes.attr("transform", d => `translate(${d.x},${d.y})`);
+      });
+    }
+
+    // ── Drag Handlers ─────────────────────────────────────────────────────────
+    function dragStart(event, d) {
+      if (!event.active) simulation.alphaTarget(0.3).restart();
+      d.fx = d.x;
+      d.fy = d.y;
+    }
+
+    function dragging(event, d) {
+      d.fx = event.x;
+      d.fy = event.y;
+    }
+
+    function dragEnd(event, d) {
+      if (!event.active) simulation.alphaTarget(0);
+      d.fx = null;
+      d.fy = null;
+    }
+  </script>
+</body>
+</html>

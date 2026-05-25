@@ -1,5 +1,7 @@
 """env.txt 로더 — 경량 모듈, 외부 의존성 없음"""
 import os
+import sys
+from pathlib import Path
 
 
 def save_env_models(llm_model: str, emb_model: str, path: str = "env.txt") -> None:
@@ -40,3 +42,12 @@ def load_env_txt(path: str = "env.txt") -> dict[str, str]:
                     env_vars[key] = value
                     os.environ.setdefault(key, value)
     return env_vars
+
+
+def get_resource_path(filename: str) -> Path:
+    """Get absolute path to a resource file (supports both dev and PyInstaller exe)."""
+    if getattr(sys, 'frozen', False):
+        base_dir = Path(sys._MEIPASS)
+    else:
+        base_dir = Path(__file__).resolve().parent
+    return base_dir / "resources" / filename

@@ -74,6 +74,8 @@ a = Analysis(
         ("resources/notebook_viewer.html", "resources"),
         ("resources/notebook_chat.html",   "resources"),
         ("resources/cached_response.html", "resources"),
+        ("resources/knowledge_graph.html", "resources"),
+        ("resources/wiki_node.html",       "resources"),
         ("resources/js",             "resources/js"),
         ("resources/css",            "resources/css"),
         # STT 서브프로세스 스크립트 (참조용 — 실행은 --stt-subprocess sentinel 경유)
