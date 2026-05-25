@@ -22,10 +22,11 @@ from ui.graph_tab      import GraphTab
 from ui.notebook_tab   import NotebookTab
 from ui.dir_tab        import DirTab
 from ui.cached_responses_tab import CachedResponsesTab
+from ui.wiki_tab       import KnowledgeGraphTab
 from workers.llm_worker import (
     RagBuildWorker, LLMWorker, ForceWorker,
     ExampleQuestionsWorker, SuggestedQueriesWorker, SummaryWorker,
-    NotebookChatWorker,
+    NotebookChatWorker, WikiBuildWorker, WikiQAWorker,
 )
 
 
@@ -42,6 +43,7 @@ class AppState:
     dir_hash:           str         = ""
     nb_dir_used:        str         = ""
     rag_ready:          bool        = False
+    wiki_graph_data:    dict        = field(default_factory=dict)
 
 
 class MainWindow(QMainWindow):
@@ -55,6 +57,8 @@ class MainWindow(QMainWindow):
         self._sq_worker:      SuggestedQueriesWorker | None = None
         self._summary_worker: SummaryWorker | None = None
         self._nb_chat_worker: NotebookChatWorker | None = None
+        self._wiki_worker:    WikiBuildWorker | None = None
+        self._wiki_qa_worker: WikiQAWorker | None = None
         self._last_config:    dict = {}
         self._config_collapsed: bool = False
         self._config_panel_width: int = 260
@@ -102,6 +106,7 @@ class MainWindow(QMainWindow):
         self.notebook_tab = NotebookTab()
         self.dir_tab      = DirTab()
         self.cached_tab   = CachedResponsesTab()
+        self.wiki_tab     = KnowledgeGraphTab()
 
         self.tab_widget.addTab(self.notebook_tab, "📓  노트북 뷰어")
         self.tab_widget.addTab(self.chat_tab,     "💬  RAG 채팅")
@@ -109,6 +114,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.graph_tab,    "🕸️  그래프 탐색")
         self.tab_widget.addTab(self.dir_tab,      "📁  디렉토리")
         self.tab_widget.addTab(self.cached_tab,   "💾  캐시 응답")
+        self.tab_widget.addTab(self.wiki_tab,     "🗺️  지식 그래프")
 
         self.tab_widget.tabBar().setTabVisible(2, False)  # 문서 탐색
         self.tab_widget.tabBar().setTabVisible(3, False)  # 그래프 탐색
@@ -138,6 +144,9 @@ class MainWindow(QMainWindow):
         self.notebook_tab.stop_requested.connect(self._on_summary_stop)
         self.notebook_tab.notebook_chat_requested.connect(self._on_notebook_chat)
         self.notebook_tab.notebook_chat_stop.connect(self._on_notebook_chat_stop)
+        self.wiki_tab.wiki_build_requested.connect(self._on_wiki_build)
+        self.wiki_tab.wiki_qa_requested.connect(self._on_wiki_qa)
+        self.wiki_tab.stop_requested.connect(self._on_wiki_stop)
         self.config_panel.stt_language_combo.currentIndexChanged.connect(
             lambda: self._propagate_stt_language(self.config_panel.stt_language_combo.currentData())
         )
@@ -232,12 +241,18 @@ class MainWindow(QMainWindow):
         # 캐시 디렉토리 전파 (notebook_tab은 set_cache_dir() 별도, chat/cached는 새로 추가)
         self.chat_tab.set_cache_dir(cfg["cache_dir"])
         self.cached_tab.set_cache_dir(cfg["cache_dir"])
+        self.wiki_tab.set_cache_dir(cfg["cache_dir"])
+        self.wiki_tab.set_nb_dir(cfg["nb_dir"])
         self.graph_tab.load_graph(rag_sys["graph"])
         self.notebook_tab.set_cache_dir(cfg["cache_dir"])
         self.notebook_tab.load_cells(rag_sys["cells"])
         self.dir_tab.load_tree(cfg["nb_dir"], rag_sys["cells"])
         nb_names = sorted({c["notebook"] for c in rag_sys["cells"]})
         self.chat_tab.load_notebooks(nb_names)
+
+        # Wiki 자동 로드 (캐시가 있으면)
+        from rag_core import load_wiki_graph_cache, should_rebuild_wiki
+        self._try_auto_load_wiki(cfg["cache_dir"], cfg["nb_dir"])
 
         self.statusBar().showMessage(
             f"✅ 준비 완료 — 노트북 {rag_sys['nb_count']}개, 셀 {rag_sys['cell_count']}개 인덱싱"
@@ -442,6 +457,81 @@ class MainWindow(QMainWindow):
         if self._nb_chat_worker and self._nb_chat_worker.isRunning():
             self._nb_chat_worker.stop()
 
+    # ── Wiki 지식 그래프 ──────────────────────────────────────────────────────
+
+    def _on_wiki_build(self, params: dict):
+        """Wiki 생성 요청"""
+        if not self.state.llm:
+            QMessageBox.information(
+                self, "알림",
+                "LLM이 설정되지 않았습니다. RAG 시스템을 먼저 구축해 주세요."
+            )
+            return
+
+        if self._wiki_worker and self._wiki_worker.isRunning():
+            return
+
+        self._wiki_worker = WikiBuildWorker(
+            llm=self.state.llm,
+            cache_dir=params["cache_dir"],
+            nb_dir=params["nb_dir"],
+            overwrite=params.get("overwrite", False),
+        )
+
+        self._wiki_worker.progress_signal.connect(self.wiki_tab.on_wiki_progress)
+        self._wiki_worker.page_created.connect(self.wiki_tab.on_page_created)
+        self._wiki_worker.finished_signal.connect(self._on_wiki_finished)
+        self._wiki_worker.error_signal.connect(self.wiki_tab.on_wiki_error)
+        self._wiki_worker.start()
+
+    def _on_wiki_finished(self, graph_data: dict):
+        """Wiki 생성 완료"""
+        self.state.wiki_graph_data = graph_data
+        self.wiki_tab.on_wiki_finished(graph_data)
+
+    def _try_auto_load_wiki(self, cache_dir: str, nb_dir: str):
+        """RAG 준비 완료 후 wiki 자동 로드 (캐시가 있으면)"""
+        from rag_core import load_wiki_graph_cache, should_rebuild_wiki
+
+        # 캐시가 있고 변경 없으면 자동 로드
+        if not should_rebuild_wiki(cache_dir, nb_dir):
+            cached_graph = load_wiki_graph_cache(cache_dir)
+            if cached_graph:
+                self.wiki_tab.status_label.setText("💾 이전 Wiki 캐시 로드 중…")
+                self.wiki_tab.on_wiki_finished(cached_graph)
+                self.state.wiki_graph_data = cached_graph
+                return
+
+        # 캐시 없으면 Wiki 생성 가능 안내
+        if (Path(cache_dir) / "summaries.json").exists():
+            self.wiki_tab.on_rag_ready_hint()
+
+    def _on_wiki_stop(self):
+        """Wiki 생성 중단"""
+        if self._wiki_worker and self._wiki_worker.isRunning():
+            self._wiki_worker.stop()
+
+    def _on_wiki_qa(self, question: str):
+        """Wiki Q&A 요청"""
+        if not self.state.llm:
+            return
+
+        if self._wiki_qa_worker and self._wiki_qa_worker.isRunning():
+            return
+
+        cache_dir = self._last_config.get("cache_dir", ".rag_cache")
+
+        self._wiki_qa_worker = WikiQAWorker(
+            llm=self.state.llm,
+            question=question,
+            cache_dir=cache_dir,
+        )
+
+        self._wiki_qa_worker.chunk_received.connect(self.wiki_tab.on_qa_chunk)
+        self._wiki_qa_worker.finished_signal.connect(self.wiki_tab.on_qa_finished)
+        self._wiki_qa_worker.error_signal.connect(self.wiki_tab.on_wiki_error)
+        self._wiki_qa_worker.start()
+
     # ── 파일 변경 감지 ────────────────────────────────────────────────────────
 
     def _check_dir_hash(self):
@@ -462,7 +552,7 @@ class MainWindow(QMainWindow):
         # 실행 중인 워커 정리
         for worker in [self._rag_worker, self._llm_worker, self._force_worker,
                        self._eq_worker, self._sq_worker, self._summary_worker,
-                       self._nb_chat_worker,
+                       self._nb_chat_worker, self._wiki_worker, self._wiki_qa_worker,
                        self.chat_tab._recorder, self.chat_tab._stt_worker,
                        self.notebook_tab._recorder, self.notebook_tab._stt_worker]:
             if worker and worker.isRunning():
