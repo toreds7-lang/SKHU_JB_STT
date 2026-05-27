@@ -161,16 +161,30 @@ body {
 .card-body a:hover { text-decoration: underline; }
 
 /* ── Mermaid diagram ──────────────────────────────────────── */
-.card-body .mermaid {
-  display: flex;
-  justify-content: center;
+.mermaid-wrapper {
+  background: #111827;
+  border: 1px solid #2a3045;
+  border-radius: 4px;
+  padding: 12px;
   margin: 0.8em 0;
+  overflow-x: auto;
+  text-align: center;
+  position: relative;
 }
-
-.card-body .mermaid svg {
+.mermaid-wrapper svg {
   max-width: 100%;
   height: auto;
 }
+.mermaid-save-btn {
+  position: absolute; top: 6px; right: 6px;
+  background: #2a3045; color: #94a3b8; border: 1px solid #3a4055;
+  border-radius: 4px; padding: 2px 7px; font-size: 10px;
+  font-family: "Pretendard","Malgun Gothic",sans-serif;
+  cursor: pointer; opacity: 0; transition: opacity 0.15s;
+}
+.mermaid-wrapper:hover .mermaid-save-btn { opacity: 1; }
+.mermaid-save-btn:hover { background: #3a4055; color: #e2e8f0; }
+.mermaid-save-btn.saved { color: #4ade80; border-color: #4ade80; }
 
 </style>
 </head>
@@ -179,6 +193,71 @@ body {
 <div id="container"></div>
 
 <script>
+// KaTeX 수학 확장 (marked.js 플러그인)
+function _katexRender(text, displayMode) {
+  if (!window.katex) return null;
+  try { return katex.renderToString(text, { displayMode: displayMode, throwOnError: false }); }
+  catch(e) { return null; }
+}
+
+const mathExtension = {
+  extensions: [
+    // $$...$$ (display block)
+    {
+      name: 'displayMath',
+      level: 'block',
+      start(src) { return src.indexOf('$$'); },
+      tokenizer(src) {
+        const m = src.match(/^\$\$([\s\S]*?)\$\$/);
+        if (m) return { type: 'displayMath', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) {
+        return _katexRender(token.text, true) || '<span>' + token.raw + '</span>';
+      }
+    },
+    // \[...\] (display block)
+    {
+      name: 'displayMathBracket',
+      level: 'block',
+      start(src) { return src.indexOf('\\['); },
+      tokenizer(src) {
+        const m = src.match(/^\\\[([\s\S]*?)\\\]/);
+        if (m) return { type: 'displayMathBracket', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) {
+        return _katexRender(token.text, true) || '<span>' + token.raw + '</span>';
+      }
+    },
+    // $...$ (inline)
+    {
+      name: 'inlineMath',
+      level: 'inline',
+      start(src) { return src.indexOf('$'); },
+      tokenizer(src) {
+        const m = src.match(/^\$((?:[^$\\\n]|\\.)+?)\$/);
+        if (m) return { type: 'inlineMath', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) {
+        return _katexRender(token.text, false) || '<span>' + token.raw + '</span>';
+      }
+    },
+    // \(...\) (inline)
+    {
+      name: 'inlineMathParen',
+      level: 'inline',
+      start(src) { return src.indexOf('\\('); },
+      tokenizer(src) {
+        const m = src.match(/^\\\(((?:[^\\]|\\.)*?)\\\)/);
+        if (m) return { type: 'inlineMathParen', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) {
+        return _katexRender(token.text, false) || '<span>' + token.raw + '</span>';
+      }
+    }
+  ]
+};
+marked.use(mathExtension);
+
 // Mermaid code fence 인터셉트
 const mermaidExtension = {
   renderer: {
@@ -188,7 +267,7 @@ const mermaidExtension = {
           .replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;');
-        return '<div class="mermaid">' + escaped + '</div>';
+        return '<div class="mermaid-wrapper"><div class="mermaid">' + escaped + '</div></div>';
       }
       return false;
     }
@@ -212,25 +291,142 @@ marked.setOptions({
 });
 
 // Configure mermaid
-mermaid.initialize({
-  startOnLoad: true,
-  theme: 'dark',
-  securityLevel: 'loose',
-  darkMode: true,
-  background: '#0d0f14',
-  primaryColor: '#1e2330',
-  primaryTextColor: '#e2e8f0',
-  primaryBorderColor: '#2a3045',
-  notebkgColor: '#111827',
-  noteBorderColor: '#2a3045',
-});
+if (window.mermaid) {
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    securityLevel: 'loose',
+    fontFamily: '"Pretendard","Malgun Gothic",sans-serif',
+    fontSize: 13,
+    suppressErrorRendering: true
+  });
+
+  // 폭탄 아이콘이 들어간 error SVG를 DOM 어디에서든 자동 제거
+  function _isMermaidErrorSvg(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.tagName !== 'svg' && node.tagName !== 'SVG') return false;
+    var html = node.outerHTML || '';
+    return html.indexOf('Syntax error') !== -1 ||
+           html.indexOf('aria-roledescription="error"') !== -1;
+  }
+  var _mermaidObserver = new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      m.addedNodes.forEach(function(node) {
+        if (_isMermaidErrorSvg(node)) {
+          var wrapper = node.closest && node.closest('.mermaid-wrapper');
+          if (wrapper) wrapper.style.display = 'none';
+          else node.remove();
+        }
+      });
+    });
+  });
+  _mermaidObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+function fixMdSpaces(md) {
+  return md.replace(/\*\*[ \t]+((?:[^\n*]|\*(?!\*))+?)[ \t]+\*\*/g, '**$1**');
+}
+
+function copyViaConsole(text) {
+  console.log("__COPY__:" + text);
+}
+
+function addCopyButtons(root) {
+  root.querySelectorAll('pre > code').forEach(function(codeEl) {
+    var pre = codeEl.parentElement;
+    if (pre.querySelector('.copy-btn')) return;
+    var btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.textContent = '복사';
+    btn.addEventListener('click', function() {
+      copyViaConsole(codeEl.textContent);
+      btn.textContent = '✓ 복사됨';
+      btn.classList.add('copied');
+      setTimeout(function() {
+        btn.textContent = '복사';
+        btn.classList.remove('copied');
+      }, 1500);
+    });
+    pre.appendChild(btn);
+  });
+}
+
+function _attachMermaidSaveBtn(el) {
+  var wrapper = el.closest('.mermaid-wrapper');
+  if (!wrapper || wrapper.querySelector('.mermaid-save-btn')) return;
+  var btn = document.createElement('button');
+  btn.className = 'mermaid-save-btn';
+  btn.textContent = 'SVG';
+  btn.title = 'SVG로 저장';
+  btn.addEventListener('click', function() {
+    var svgEl = el.querySelector('svg');
+    if (!svgEl) return;
+    var clone = svgEl.cloneNode(true);
+    if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    if (!clone.getAttribute('xmlns:xlink')) clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+    var svgText = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
+    var b64 = btoa(unescape(encodeURIComponent(svgText)));
+    var name = 'mermaid-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    console.log('__SAVE_SVG__:' + name + '|' + b64);
+    btn.textContent = '✓ 저장됨';
+    btn.classList.add('saved');
+    setTimeout(function() {
+      btn.textContent = 'SVG';
+      btn.classList.remove('saved');
+    }, 1500);
+  });
+  wrapper.appendChild(btn);
+}
+
+function renderMermaid(root) {
+  if (!window.mermaid) return;
+  var nodes = root.querySelectorAll('.mermaid:not([data-processed])');
+  if (!nodes.length) return;
+  nodes.forEach(function(el) {
+    var code = el.textContent;
+    var id = 'mermaid-' + Math.random().toString(36).slice(2);
+    el.setAttribute('data-processed', 'true');
+
+    function hideWrapper() {
+      var wrapper = el.closest('.mermaid-wrapper');
+      if (wrapper) wrapper.style.display = 'none';
+    }
+
+    var parsePromise;
+    try {
+      parsePromise = mermaid.parse(code, { suppressErrors: true });
+    } catch (e) {
+      hideWrapper();
+      return;
+    }
+    Promise.resolve(parsePromise).then(function(parseResult) {
+      if (parseResult === false || parseResult === null || parseResult === undefined) {
+        hideWrapper();
+        return null;
+      }
+      return mermaid.render(id, code);
+    }).then(function(result) {
+      if (!result || !result.svg) return;
+      if (result.svg.indexOf('Syntax error') !== -1 ||
+          result.svg.indexOf('aria-roledescription="error"') !== -1) {
+        hideWrapper();
+        return;
+      }
+      el.innerHTML = result.svg;
+      _attachMermaidSaveBtn(el);
+    }).catch(function(err) {
+      hideWrapper();
+    });
+  });
+}
 
 function showNodeDetail(label, nodeType, content) {
   const typeBadge = nodeType === 'notebook'
     ? '<span class="type-badge notebook">📓 Notebook</span>'
     : '<span class="type-badge concept">🔷 Concept</span>';
 
-  const htmlContent = marked.parse(content);
+  const cleanContent = fixMdSpaces(content);
+  const htmlContent = marked.parse(cleanContent);
 
   const html = `
     <div class="node-card">
@@ -244,22 +440,19 @@ function showNodeDetail(label, nodeType, content) {
     </div>
   `;
 
-  document.getElementById('container').innerHTML = html;
+  var container = document.getElementById('container');
+  container.innerHTML = html;
 
   // Re-highlight code blocks
-  document.querySelectorAll('pre code').forEach(block => {
+  container.querySelectorAll('pre code').forEach(block => {
     hljs.highlightElement(block);
   });
 
+  // Add copy buttons
+  addCopyButtons(container);
+
   // Re-render mermaid diagrams
-  try {
-    const mermaidDivs = document.querySelectorAll('.mermaid');
-    if (mermaidDivs.length > 0) {
-      mermaid.run();
-    }
-  } catch (e) {
-    console.error('Mermaid rendering error:', e);
-  }
+  renderMermaid(container);
 }
 
 function showPlaceholder() {
@@ -280,17 +473,6 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-function copyCode(btn) {
-  const code = btn.previousElementSibling?.textContent || btn.parentElement.textContent;
-  navigator.clipboard.writeText(code).then(() => {
-    btn.textContent = '✓ 복사됨';
-    btn.classList.add('copied');
-    setTimeout(() => {
-      btn.textContent = '복사';
-      btn.classList.remove('copied');
-    }, 2000);
-  });
-}
 
 // Show placeholder on load
 document.addEventListener('DOMContentLoaded', showPlaceholder);

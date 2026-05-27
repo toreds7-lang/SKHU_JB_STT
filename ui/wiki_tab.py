@@ -7,10 +7,11 @@ import json
 from pathlib import Path
 
 from env_loader import get_resource_path
+from ui._svg_save import _SAVE_SVG_PREFIX, handle_save_svg_payload
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QPushButton, QLabel, QProgressBar, QPlainTextEdit,
-    QTextBrowser, QCheckBox, QMessageBox,
+    QCheckBox, QMessageBox, QApplication, QTableWidget, QTableWidgetItem,
 )
 from PyQt6.QtCore import Qt, QEvent, pyqtSignal, QUrl
 from PyQt6.QtGui import QWheelEvent, QKeyEvent
@@ -63,13 +64,39 @@ class _WikiGraphPage(QWebEnginePage):
     node_clicked = pyqtSignal(dict)
 
     def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
+        # Log JavaScript errors to help debug crashes
+        from PyQt6.QtWebEngineCore import QWebEnginePage as QWEPage
+        if level == QWEPage.JavaScriptConsoleMessageLevel.ErrorMessageLevel:
+            print(f"[JS Error] Line {lineNumber}: {message}")
+        elif level == QWEPage.JavaScriptConsoleMessageLevel.WarningMessageLevel:
+            print(f"[JS Warning] Line {lineNumber}: {message}")
+
         # Protocol: JS sends "NODE_CLICK::<json>" via console.log
         if message.startswith("NODE_CLICK::"):
             try:
                 payload = json.loads(message[len("NODE_CLICK::"):])
                 self.node_clicked.emit(payload)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[Error] Failed to parse NODE_CLICK payload: {e}")
+
+
+_COPY_PREFIX = "__COPY__:"
+
+
+class _WikiNodePage(QWebEnginePage):
+    """Intercepts __COPY__ and __SAVE_SVG__ from wiki_node.html"""
+    def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
+        if message.startswith(_COPY_PREFIX):
+            QApplication.clipboard().setText(message[len(_COPY_PREFIX):])
+        elif message.startswith(_SAVE_SVG_PREFIX):
+            handle_save_svg_payload(message[len(_SAVE_SVG_PREFIX):])
+
+
+class _WikiQAPage(QWebEnginePage):
+    """Intercepts __COPY__ from wiki_qa.html"""
+    def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
+        if message.startswith(_COPY_PREFIX):
+            QApplication.clipboard().setText(message[len(_COPY_PREFIX):])
 
 
 class KnowledgeGraphTab(QWidget):
@@ -86,12 +113,16 @@ class KnowledgeGraphTab(QWidget):
         self.nb_dir = None
         self._pending_graph_data = None
         self._qa_buffer = ""
+        self._qa_page_loaded = False
+        self._pending_qa_js = []
+        self._node_map = {}  # node_id -> node_data mapping
+        self._table_splitter = None  # Left side main splitter (tables + graph)
 
         self._build_ui()
         self._connect_signals()
 
     def _build_ui(self):
-        """Build the main UI layout"""
+        """Build the main UI layout with tables + graph on left, details + QA on right"""
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(8)
@@ -100,19 +131,32 @@ class KnowledgeGraphTab(QWidget):
         toolbar = self._build_toolbar()
         main_layout.addWidget(toolbar)
 
-        # ── Main Splitter (Horizontal) ────────────────────────────────────────
+        # ── Main Horizontal Splitter (Tables+Graph on left | Details+QA on right) ─
         h_splitter = QSplitter(Qt.Orientation.Horizontal)
         h_splitter.setHandleWidth(6)
         h_splitter.setChildrenCollapsible(False)
         h_splitter.setStyleSheet(SPLITTER_STYLE)
 
-        # Left: D3.js Graph
+        # Left: Vertical Splitter (Tables on top | Graph below)
+        self._table_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._table_splitter.setHandleWidth(6)
+        self._table_splitter.setChildrenCollapsible(False)
+        self._table_splitter.setStyleSheet(SPLITTER_STYLE)
+
+        # Left-Top: Tables (Horizontal splitter: Notebooks | Concepts)
+        tables_widget = self._build_tables_panel()
+        self._table_splitter.addWidget(tables_widget)
+
+        # Left-Bottom: D3.js Graph
         self.graph_view = QWebEngineView()
         self.graph_page = _WikiGraphPage(self.graph_view)
         self.graph_view.setPage(self.graph_page)
-        h_splitter.addWidget(self.graph_view)
+        self._table_splitter.addWidget(self.graph_view)
 
-        # Right: Vertical Splitter
+        self._table_splitter.setSizes([200, 300])  # Tables: 200px, Graph: 300px
+        h_splitter.addWidget(self._table_splitter)
+
+        # Right: Vertical Splitter (Detail browser on top | Q&A on bottom)
         v_splitter = QSplitter(Qt.Orientation.Vertical)
         v_splitter.setHandleWidth(6)
         v_splitter.setChildrenCollapsible(False)
@@ -120,6 +164,8 @@ class KnowledgeGraphTab(QWidget):
 
         # Right-Top: Node Detail Browser
         self.detail_browser = QWebEngineView()
+        self.detail_node_page = _WikiNodePage(self.detail_browser)
+        self.detail_browser.setPage(self.detail_node_page)
         node_html = get_resource_path("wiki_node.html")
         self.detail_browser.setUrl(QUrl.fromLocalFile(str(node_html)))
         self.detail_browser.installEventFilter(self)  # Ctrl+Wheel zoom
@@ -134,6 +180,125 @@ class KnowledgeGraphTab(QWidget):
         h_splitter.setSizes([700, 400])  # 60/40 split
 
         main_layout.addWidget(h_splitter, 1)
+
+    def _build_tables_panel(self) -> QWidget:
+        """Build the tables widget with Notebooks and Concepts side by side"""
+        tables_widget = QWidget()
+        layout = QHBoxLayout(tables_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        # Notebooks table
+        self.nb_panel = self._make_table_panel("📓 Notebooks", "notebook")
+        layout.addWidget(self.nb_panel, 1)
+
+        # Concepts table
+        self.concept_panel = self._make_table_panel("🔷 Concepts", "concept")
+        layout.addWidget(self.concept_panel, 1)
+
+        return tables_widget
+
+    def _make_table_panel(self, title: str, node_type: str) -> QWidget:
+        """Create a table panel with toggle button and QTableWidget"""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        # Toggle button
+        toggle_btn = QPushButton(f"{title} ▲")
+        toggle_btn.setStyleSheet(
+            "QPushButton { background: #2a3045; color: #e2e8f0; border: none; "
+            "border-radius: 4px; padding: 6px 8px; font-weight: 600; font-size: 11px; text-align: left; }"
+            "QPushButton:hover { background: #3d4558; }"
+        )
+        toggle_btn.setFixedHeight(28)
+        layout.addWidget(toggle_btn)
+
+        # Table widget
+        table = QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["이름", "요약"])
+        table.setColumnWidth(0, 100)
+
+        # Make summary column stretch to fill available space
+        from PyQt6.QtWidgets import QHeaderView
+        table.horizontalHeader().setStretchLastSection(True)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setStyleSheet(
+            "QTableWidget { background: #161922; color: #e2e8f0; border: 1px solid #2a3045; "
+            "border-radius: 4px; gridline-color: #2a3045; }"
+            "QHeaderView::section { background: #1e2330; color: #94a3b8; padding: 4px; "
+            "border: none; font-weight: 600; font-size: 10px; }"
+            "QTableWidget::item:selected { background: #4f8ef7; }"
+            "QTableWidget::item { padding: 4px; }"
+        )
+        layout.addWidget(table)
+
+        # Store references based on type
+        if node_type == "notebook":
+            self.nb_panel = panel
+            self.nb_table = table
+            self.nb_toggle_btn = toggle_btn
+            self.nb_table_expanded = True
+        else:  # concept
+            self.concept_panel = panel
+            self.concept_table = table
+            self.concept_toggle_btn = toggle_btn
+            self.concept_table_expanded = True
+
+        # Connect toggle button (with default args to avoid lambda capture issues)
+        toggle_btn.clicked.connect(
+            lambda p=panel, t=table, b=toggle_btn, title_text=title, nt=node_type: self._toggle_table(
+                p, t, b, self._table_splitter, title_text, nt
+            )
+        )
+
+        # Connect table cell click (more reliable than itemSelectionChanged)
+        table.cellClicked.connect(
+            lambda row, col, nt=node_type: self._on_table_cell_clicked(row, nt)
+        )
+
+        return panel
+
+    def _toggle_table(self, panel: QWidget, table: QTableWidget, btn: QPushButton,
+                     splitter: QSplitter, title: str, node_type: str) -> None:
+        """Toggle table visibility and update button icon"""
+        try:
+            is_expanded = table.isVisible()
+
+            if is_expanded:
+                # Collapse: hide table and adjust splitter
+                table.setVisible(False)
+                btn.setText(f"{title} ▼")
+
+                # Get current splitter sizes
+                sizes = splitter.sizes()
+                if len(sizes) >= 2 and sizes[0] > 0:
+                    # Make table area 0, graph takes all space
+                    total = sizes[0] + sizes[1]
+                    splitter.setSizes([0, total])
+            else:
+                # Expand: show table and adjust splitter
+                table.setVisible(True)
+                btn.setText(f"{title} ▲")
+
+                # Get current splitter sizes
+                sizes = splitter.sizes()
+                if len(sizes) >= 2 and sizes[1] > 0:
+                    # Restore table to ~200px, rest to graph
+                    total = sizes[0] + sizes[1]
+                    table_height = min(200, max(100, total // 3))
+                    splitter.setSizes([table_height, total - table_height])
+        except Exception as e:
+            print(f"[Error] _toggle_table failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _build_toolbar(self) -> QWidget:
         """Build toolbar widget"""
@@ -194,7 +359,16 @@ class KnowledgeGraphTab(QWidget):
         qa_label.setStyleSheet("color: #e2e8f0; font-weight: 600; font-size: 12px;")
         qa_layout.addWidget(qa_label)
 
-        # Input + Button row
+        # Response (QWebEngineView for markdown rendering)
+        self.qa_response = QWebEngineView()
+        self.qa_response_page = _WikiQAPage(self.qa_response)
+        self.qa_response.setPage(self.qa_response_page)
+        qa_html = get_resource_path("wiki_qa.html")
+        self.qa_response.setUrl(QUrl.fromLocalFile(str(qa_html)))
+        self.qa_response.loadFinished.connect(self._on_qa_page_loaded)
+        qa_layout.addWidget(self.qa_response, 1)
+
+        # Input + Send row
         input_row = QHBoxLayout()
         input_row.setContentsMargins(0, 0, 0, 0)
         input_row.setSpacing(4)
@@ -209,7 +383,6 @@ class KnowledgeGraphTab(QWidget):
         self.qa_input.send_requested.connect(self._on_send_qa)
         input_row.addWidget(self.qa_input)
 
-        # Send button
         self.qa_send_btn = QPushButton("전송")
         self.qa_send_btn.setStyleSheet(BTN_STYLE)
         self.qa_send_btn.setFixedWidth(60)
@@ -218,15 +391,7 @@ class KnowledgeGraphTab(QWidget):
 
         qa_layout.addLayout(input_row)
 
-        # Response
-        self.qa_response = QTextBrowser()
-        self.qa_response.setStyleSheet(
-            "QTextBrowser { background: #0d0f14; color: #e2e8f0; border: 1px solid #2a3045; "
-            "border-radius: 4px; padding: 8px; }"
-        )
-        qa_layout.addWidget(self.qa_response, 1)
-
-        # Clear button
+        # Clear button row (right-aligned, transparent style)
         clear_row = QHBoxLayout()
         clear_row.setContentsMargins(0, 0, 0, 0)
         clear_row.addStretch()
@@ -303,14 +468,12 @@ class KnowledgeGraphTab(QWidget):
     def on_qa_chunk(self, chunk: str) -> None:
         """Append streaming chunk to response"""
         self._qa_buffer += chunk
-        self.qa_response.setText(self._qa_buffer)
-        # Auto-scroll to bottom
-        self.qa_response.verticalScrollBar().setValue(
-            self.qa_response.verticalScrollBar().maximum()
-        )
+        escaped = json.dumps(self._qa_buffer)
+        self._run_qa_js(f"streamingBuffer = {escaped}; renderStreamingBuffer();")
 
     def on_qa_finished(self, answer: str) -> None:
         """Q&A finished"""
+        self._run_qa_js("finishAiMessage();")
         self.qa_send_btn.setEnabled(True)
         self.qa_input.setEnabled(True)
 
@@ -349,32 +512,26 @@ class KnowledgeGraphTab(QWidget):
         self.qa_send_btn.setEnabled(False)
         self.qa_input.setEnabled(False)
         self._qa_buffer = ""
-        self.qa_response.setText("📝 응답 생성 중…")
 
+        escaped_q = json.dumps(question)
+        self._run_qa_js(f"appendUserMessage({escaped_q}); startAiMessage();")
+
+        self.qa_input.setPlainText("")
         self.wiki_qa_requested.emit(question)
 
     def _on_clear_qa(self) -> None:
         """Clear Q&A conversation"""
-        self.qa_response.setText("")
         self._qa_buffer = ""
+        self._run_qa_js("clearChat();")
 
     def _on_node_selected(self, node_data: dict) -> None:
         """Node clicked in graph"""
-        content = node_data.get("content", "")
-        label = node_data.get("label", node_data.get("id", ""))
-        node_type = node_data.get("type", "concept")
+        # Display node detail
+        self._display_node(node_data)
 
-        # Render node detail via JavaScript
-        escaped_content = json.dumps(content)
-        escaped_label = json.dumps(label)
-        escaped_type = json.dumps(node_type)
-        self.detail_browser.page().runJavaScript(
-            f"showNodeDetail({escaped_label}, {escaped_type}, {escaped_content})"
-        )
-
-        # Highlight node in graph
+        # Sync table selection
         node_id = node_data.get("id", "")
-        self.graph_view.page().runJavaScript(f"highlightNode('{node_id}')")
+        self._select_table_row(node_id)
 
     def _load_graph_html(self, graph_data: dict) -> None:
         """Load knowledge_graph.html and inject data"""
@@ -392,7 +549,138 @@ class KnowledgeGraphTab(QWidget):
         self.graph_view.loadFinished.disconnect(self._on_graph_loaded)
 
     def _inject_graph_data(self, graph_data: dict) -> None:
-        """Inject graph data into D3.js visualization"""
+        """Inject graph data into D3.js visualization and populate tables"""
         json_str = json.dumps(graph_data, ensure_ascii=False)
         js_code = f"loadGraphData({json_str})"
         self.graph_view.page().runJavaScript(js_code)
+
+        # Populate tables with node data
+        self._populate_tables(graph_data.get("nodes", []))
+
+    def _on_qa_page_loaded(self, ok: bool) -> None:
+        """Handle QA page load completion"""
+        self._qa_page_loaded = ok
+        for js in self._pending_qa_js:
+            self.qa_response.page().runJavaScript(js)
+        self._pending_qa_js.clear()
+
+    def _run_qa_js(self, js: str) -> None:
+        """Run JavaScript on QA page with load queue support"""
+        if self._qa_page_loaded:
+            self.qa_response.page().runJavaScript(js)
+        else:
+            self._pending_qa_js.append(js)
+
+    # ── Table Interaction ─────────────────────────────────────────────────────
+
+    def _populate_tables(self, nodes: list) -> None:
+        """Populate Notebooks and Concepts tables from node data"""
+        # Clear node map and tables
+        self._node_map = {}
+        self.nb_table.setRowCount(0)
+        self.concept_table.setRowCount(0)
+
+        # Sort nodes by label
+        sorted_nodes = sorted(nodes, key=lambda n: n.get("label", "").lower())
+
+        # Separate and populate tables
+        for node in sorted_nodes:
+            node_id = node.get("id", "")
+            label = node.get("label", "")
+            summary = node.get("summary", "")
+            node_type = node.get("type", "concept")
+
+            # Store in map
+            self._node_map[node_id] = node
+
+            # Truncate summary
+            summary_text = summary[:80] if summary else "-"
+
+            # Determine which table to add to
+            table = self.nb_table if node_type == "notebook" else self.concept_table
+
+            # Add row
+            row = table.rowCount()
+            table.insertRow(row)
+
+            # Column 0: Name
+            name_item = QTableWidgetItem(label)
+            name_item.setData(Qt.ItemDataRole.UserRole, node_id)  # Store node_id
+            table.setItem(row, 0, name_item)
+
+            # Column 1: Summary
+            summary_item = QTableWidgetItem(summary_text)
+            summary_item.setData(Qt.ItemDataRole.UserRole, node_id)
+            table.setItem(row, 1, summary_item)
+
+        # Update table titles with counts
+        nb_count = self.nb_table.rowCount()
+        concept_count = self.concept_table.rowCount()
+        self.nb_toggle_btn.setText(f"📓 Notebooks ({nb_count}) ▲")
+        self.concept_toggle_btn.setText(f"🔷 Concepts ({concept_count}) ▲")
+
+    def _on_table_cell_clicked(self, row: int, node_type: str) -> None:
+        """Handle table cell click (cellClicked signal)"""
+        # Determine which table was clicked
+        table = self.nb_table if node_type == "notebook" else self.concept_table
+
+        # Get node_id from the clicked row
+        item = table.item(row, 0)
+        if not item:
+            return
+
+        node_id = item.data(Qt.ItemDataRole.UserRole)
+        if not node_id:
+            return
+
+        # Clear selection in other table
+        other_table = self.concept_table if node_type == "notebook" else self.nb_table
+        other_table.clearSelection()
+
+        # Select this row in the current table
+        table.selectRow(row)
+
+        # Get node data and display
+        if node_id in self._node_map:
+            node_data = self._node_map[node_id]
+            self._display_node(node_data)
+
+    def _display_node(self, node_data: dict) -> None:
+        """Display node detail in graph and detail browser"""
+        node_id = node_data.get("id", "")
+        label = node_data.get("label", "")
+        node_type = node_data.get("type", "concept")
+        content = node_data.get("content", "")
+
+        # Update detail browser with node content
+        escaped_content = json.dumps(content)
+        escaped_label = json.dumps(label)
+        escaped_type = json.dumps(node_type)
+        self.detail_browser.page().runJavaScript(
+            f"showNodeDetail({escaped_label}, {escaped_type}, {escaped_content})"
+        )
+
+        # Highlight node in graph and pan camera
+        self.graph_view.page().runJavaScript(
+            f"selectNodeExternal('{node_id}')"
+        )
+
+    def _select_table_row(self, node_id: str) -> None:
+        """Select the table row corresponding to a graph node click"""
+        if node_id not in self._node_map:
+            return
+
+        node_data = self._node_map[node_id]
+        node_type = node_data.get("type", "concept")
+        table = self.nb_table if node_type == "notebook" else self.concept_table
+
+        # Find and select the row
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            if item and item.data(Qt.ItemDataRole.UserRole) == node_id:
+                table.selectRow(row)
+                break
+
+        # Clear other table
+        other_table = self.concept_table if node_type == "notebook" else self.nb_table
+        other_table.clearSelection()

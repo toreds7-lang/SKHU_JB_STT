@@ -132,18 +132,84 @@
   </div>
 
   <script>
+    // ── Global Error Handler ──────────────────────────────────────────────────
+    window.addEventListener('error', (event) => {
+      console.error(`Uncaught error: ${event.message} at ${event.filename}:${event.lineno}`);
+    });
+
     // ── Global State ──────────────────────────────────────────────────────────
     let graphData = { nodes: [], edges: [] };
+    let filteredData = { nodes: [], edges: [] };
     let simulation = null;
     let svg = null;
     let linkGroup = null;
     let nodeGroup = null;
     let selectedId = null;
+    let isFiltered = false;
 
     // ── Entry point: Load graph data from Python ──────────────────────────────
     function loadGraphData(data) {
       graphData = data;
+      filteredData = { nodes: [...data.nodes], edges: [...data.edges] };
       renderGraph();
+    }
+
+    // ── Filter graph to show only selected node and its neighbors ──────────────
+    function filterNodeAndNeighbors(nodeId) {
+      try {
+        if (!isFiltered || selectedId !== nodeId) {
+          // Enter filter mode
+          const connectedIds = new Set([nodeId]);
+
+          // Get source/target ID (handle both string IDs and object references)
+          function getEdgeSourceId(edge) {
+            if (!edge) return null;
+            return typeof edge.source === 'string' ? edge.source : (edge.source && edge.source.id);
+          }
+          function getEdgeTargetId(edge) {
+            if (!edge) return null;
+            return typeof edge.target === 'string' ? edge.target : (edge.target && edge.target.id);
+          }
+
+          // Safe edge iteration
+          if (graphData.edges && Array.isArray(graphData.edges)) {
+            graphData.edges.forEach(edge => {
+              try {
+                const srcId = getEdgeSourceId(edge);
+                const tgtId = getEdgeTargetId(edge);
+                if (srcId === nodeId) connectedIds.add(tgtId);
+                if (tgtId === nodeId) connectedIds.add(srcId);
+              } catch (e) {
+                console.warn("Error processing edge:", edge, e);
+              }
+            });
+          }
+
+          // Safe node/edge filtering
+          filteredData.nodes = (graphData.nodes || []).filter(n => n && connectedIds.has(n.id));
+          filteredData.edges = (graphData.edges || []).filter(e => {
+            if (!e) return false;
+            const srcId = getEdgeSourceId(e);
+            const tgtId = getEdgeTargetId(e);
+            return srcId && tgtId && connectedIds.has(srcId) && connectedIds.has(tgtId);
+          });
+
+          isFiltered = true;
+          selectedId = nodeId;
+        } else {
+          // Exit filter mode
+          filteredData = {
+            nodes: graphData.nodes ? [...graphData.nodes] : [],
+            edges: graphData.edges ? [...graphData.edges] : []
+          };
+          isFiltered = false;
+          selectedId = null;
+        }
+
+        renderGraph();
+      } catch (error) {
+        console.error("filterNodeAndNeighbors error:", error);
+      }
     }
 
     // ── Highlight a specific node ─────────────────────────────────────────────
@@ -152,11 +218,56 @@
       nodeGroup.selectAll(".node").classed("selected", d => d.id === id);
     }
 
+    // ── Select node from external source (table) with camera zoom ──────────────
+    function selectNodeExternal(nodeId) {
+      try {
+        if (!nodeGroup || !svg) {
+          console.warn("selectNodeExternal: nodeGroup or svg not initialized");
+          return;
+        }
+
+        // 1. Apply filter (same as clicking on node)
+        filterNodeAndNeighbors(nodeId);
+
+        // 2. Highlight the target node
+        highlightNode(nodeId);
+
+        // 3. Find node data and pan/zoom camera to center it
+        const node = filteredData.nodes.find(n => n && n.id === nodeId);
+        if (node && typeof node.x === 'number' && typeof node.y === 'number') {
+          const container = document.getElementById("graph-container");
+          if (!container) {
+            console.warn("selectNodeExternal: graph-container not found");
+            return;
+          }
+
+          const W = container.clientWidth;
+          const H = container.clientHeight;
+
+          if (W > 0 && H > 0) {
+            svg.transition()
+              .duration(600)
+              .call(
+                d3.zoom().transform,
+                d3.zoomIdentity.translate(W / 2 - node.x, H / 2 - node.y)
+              );
+          }
+        }
+      } catch (error) {
+        console.error("selectNodeExternal error:", error);
+      }
+    }
+
     // ── Main Render Function ──────────────────────────────────────────────────
     function renderGraph() {
       const container = document.getElementById("graph-container");
       const W = container.clientWidth;
       const H = container.clientHeight;
+
+      // Stop previous simulation to avoid memory leak
+      if (simulation) {
+        simulation.stop();
+      }
 
       // Clear previous
       d3.select("#graph-svg").selectAll("*").remove();
@@ -189,9 +300,15 @@
       linkGroup = zoomG.append("g").attr("class", "links");
       nodeGroup = zoomG.append("g").attr("class", "nodes");
 
-      // Force simulation
-      simulation = d3.forceSimulation(graphData.nodes)
-        .force("link", d3.forceLink(graphData.edges)
+      // Guard: ensure we have valid data
+      if (!filteredData.nodes || filteredData.nodes.length === 0) {
+        console.warn("No nodes to render");
+        return;
+      }
+
+      // Force simulation with filtered data
+      simulation = d3.forceSimulation(filteredData.nodes)
+        .force("link", d3.forceLink(filteredData.edges)
           .id(d => d.id)
           .distance(120)
         )
@@ -201,14 +318,14 @@
 
       // Render links
       const links = linkGroup.selectAll("line")
-        .data(graphData.edges)
+        .data(filteredData.edges)
         .join("line")
         .attr("class", "link")
         .attr("marker-end", "url(#arrow)");
 
       // Render nodes
       const nodes = nodeGroup.selectAll(".node")
-        .data(graphData.nodes)
+        .data(filteredData.nodes)
         .join("g")
         .attr("class", "node")
         .call(
@@ -234,7 +351,7 @@
 
       // Node interactions
       nodes.on("click", (event, d) => {
-        selectedId = d.id;
+        filterNodeAndNeighbors(d.id);
         highlightNode(d.id);
 
         // Signal Python via console.log protocol
