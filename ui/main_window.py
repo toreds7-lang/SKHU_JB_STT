@@ -10,7 +10,7 @@ from typing import Any
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QSplitter, QTabWidget,
-    QMessageBox, QLabel
+    QMessageBox, QLabel, QDialog, QVBoxLayout, QScrollArea, QTextBrowser, QPushButton
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
@@ -159,6 +159,7 @@ class MainWindow(QMainWindow):
 
         QShortcut(QKeySequence("Ctrl+B"), self).activated.connect(self._toggle_config_panel)
         QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self.notebook_tab._list_splitter.toggle)
+        QShortcut(QKeySequence("F1"), self).activated.connect(self._show_help_dialog)
 
     def _toggle_config_panel(self):
         if self._config_collapsed:
@@ -176,6 +177,80 @@ class MainWindow(QMainWindow):
             total = sum(self._splitter.sizes())
             self._splitter.setSizes([0, total])
             self._config_collapsed = True
+
+    def _show_help_dialog(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("도움말  (F1)")
+        dlg.resize(620, 520)
+        dlg.setStyleSheet(
+            "QDialog { background: #0d0f14; color: #e2e8f0; }"
+            "QTextBrowser { background: #161922; color: #e2e8f0; border: none; "
+            "font-size: 13px; padding: 12px; }"
+            "QPushButton { background: #1e2330; color: #94a3b8; border: 1px solid #2d3748; "
+            "border-radius: 6px; padding: 6px 20px; font-size: 13px; }"
+            "QPushButton:hover { background: #2d3748; color: #e2e8f0; }"
+        )
+
+        body = QTextBrowser()
+        body.setOpenExternalLinks(False)
+        body.setMarkdown("""
+## ⌨️ 단축키
+
+| 단축키 | 기능 |
+|--------|------|
+| **F1** | 이 도움말 표시 |
+| **Ctrl+B** | 좌측 설정 패널 접기 / 펼치기 |
+| **Ctrl+F** | 노트북 뷰어 탭 — 목록 패널 접기 / 펼치기 |
+| **Enter** | 채팅 메시지 전송 |
+| **Shift+Enter** | 입력창 줄바꿈 |
+| **↑ / ↓** | 채팅 입력 기록 탐색 |
+
+---
+
+## 💬 RAG 채팅 탭
+
+- **일반 질문**: 입력창에 질문 입력 후 Enter 또는 전송 버튼
+- **Force Mode**: `/f 질문` — 모든 노트북 셀을 전수 검색하여 관련 내용 수집
+  - 예: `/f 판다스 데이터프레임 병합 방법`
+- **⏹️ 중지 버튼**: 스트리밍 응답 또는 Force Mode 진행 중 언제든 중단 가능
+- **예시 질문 칩**: 하단 칩을 클릭하면 질문 자동 입력
+
+---
+
+## 📓 노트북 뷰어 탭
+
+- **셀 선택**: 체크박스 클릭 (Shift+클릭으로 범위 선택)
+- **전체 선택 / 해제**: 상단 체크박스 사용
+- **셀 Q&A 채팅**: 셀 선택 후 우측 채팅창에 질문 입력
+- **노트북 요약**: 노트북 목록에서 체크 후 "요약 생성" 버튼 클릭
+
+---
+
+## 🗺️ 지식 그래프 탭
+
+- **위키 빌드**: 노트북 내용을 기반으로 지식 그래프 + 위키 생성
+- **위키 Q&A**: 생성된 위키에 질문하여 빠른 답변 검색
+
+---
+
+## ⚙️ 설정 패널 (좌측)
+
+- **노트북 디렉터리**: `.ipynb` 파일이 있는 폴더 경로 입력
+- **RAG 시스템 빌드**: 설정 후 "🔨 RAG 빌드" 버튼으로 인덱스 생성
+- **병렬 워커 수**: Force Mode 시 동시 처리 LLM 호출 수 (1–10)
+- **LLM / 임베딩 설정**: 모델명, Base URL, API 키 구성
+""")
+
+        close_btn = QPushButton("닫기")
+        close_btn.clicked.connect(dlg.accept)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 12)
+        layout.setSpacing(8)
+        layout.addWidget(body)
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        dlg.exec()
 
     def _propagate_stt_language(self, language: str):
         self.chat_tab.set_stt_language(language)
