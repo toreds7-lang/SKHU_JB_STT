@@ -10,7 +10,8 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit,
     QPushButton, QTextBrowser, QScrollArea, QGroupBox,
-    QFrame, QSizePolicy, QApplication, QProgressBar, QSplitter, QSplitterHandle, QListWidget
+    QFrame, QSizePolicy, QApplication, QProgressBar, QSplitter, QSplitterHandle,
+    QListWidget, QComboBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QUrl
 from PyQt6.QtGui import QDesktopServices
@@ -192,6 +193,11 @@ class _ExternalLinkPage(QWebEnginePage):
 
 
 # ── 출처 카드 (sources_display용, QTextBrowser에서 계속 사용) ─────────────────
+def _esc(s) -> str:
+    """HTML 특수문자 이스케이프 (트레이스 블록 텍스트용)."""
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _doc_card(doc, tag_class: str, tag_name: str) -> str:
     nb    = doc.metadata.get("notebook", "?")
     cidx  = doc.metadata.get("cell_idx", "?")
@@ -311,8 +317,13 @@ class ChatTab(QWidget):
         # 캐시 관련 상태
         self._cache_dir: str = ".rag_cache"
         self._last_source_notebooks: list = []   # 직전 RAG 응답의 출처 노트북 목록
-        self._last_mode: str = "rag"             # "rag" | "force"
+        self._last_mode: str = "rag"             # "rag" | "force" | "agentic"
         self._recent_messages: dict = {}         # message_id → {query, answer, source_notebooks, mode}
+
+        # Agentic Mode 상태
+        self._agentic_active: bool = False
+        self._agentic_trace: dict = {"reasoning": "", "subquestions": [], "iterations": []}
+        self._agentic_trace_md: str = ""         # synthesis 직전 확정된 (접힌) 트레이스 블록
 
         self._build_ui()
 
@@ -540,6 +551,25 @@ class ChatTab(QWidget):
         )
         self.input_edit.viewport().setStyleSheet("background: transparent;")
         self.input_edit.returnPressed.connect(self._on_send)
+        # 채팅 모드 선택기 (일반 RAG / 에이전트). /a 접두어로도 에이전트 강제 가능.
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("💬 일반 RAG", "rag")
+        self.mode_combo.addItem("🧭 에이전트", "agentic")
+        self.mode_combo.setMinimumHeight(36)
+        self.mode_combo.setFixedWidth(112)
+        self.mode_combo.setToolTip(
+            "일반 RAG: 단일 검색 후 답변\n"
+            "에이전트: 질문 분해→반복 검색→충분성 판단 후 답변 (복합·비교 질문에 유리)\n"
+            "단축키: '/a 질문' 으로도 에이전트 실행"
+        )
+        self.mode_combo.setStyleSheet(
+            "QComboBox { background: #1e2330; color: #e2e8f0; border: 1px solid #2a3045; "
+            "border-radius: 18px; padding: 4px 10px; font-size: 12px; }"
+            "QComboBox:hover { border-color: #4f8ef7; }"
+            "QComboBox::drop-down { border: none; width: 18px; }"
+            "QComboBox QAbstractItemView { background: #1e2330; color: #e2e8f0; "
+            "selection-background-color: #1e3a5f; border: 1px solid #2a3045; }"
+        )
         self.send_btn = QPushButton("전송")
         self.send_btn.setMinimumHeight(36)
         self.send_btn.setFixedWidth(64)
@@ -553,6 +583,7 @@ class ChatTab(QWidget):
         self.mic_btn.record_start.connect(self._on_mic_start)
         self.mic_btn.record_stop.connect(self._on_mic_stop)
         input_row.setAlignment(Qt.AlignmentFlag.AlignBottom)
+        input_row.addWidget(self.mode_combo)
         input_row.addWidget(self.input_edit)
         input_row.addWidget(self.mic_btn)
         input_row.addWidget(self.send_btn)
@@ -753,15 +784,166 @@ class ChatTab(QWidget):
         self.status_label.setText("")
         self.example_bar.setVisible(False)
 
-    def on_error(self, msg: str):
-        """LLMWorker.error_signal 수신"""
+    # ── Agentic Mode API ──────────────────────────────────────────────────────
+
+    def current_mode(self) -> str:
+        """현재 선택된 채팅 모드 ('rag' | 'agentic')."""
+        return self.mode_combo.currentData() or "rag"
+
+    def start_agentic(self, query: str):
+        """Agentic Mode 시작 시 호출 (start_streaming 과 유사, ⏹ 중지 버튼 공유)."""
+        self._append_user_message(query)
+        self._streaming_buf = ""
+        self._is_streaming  = True
+        self._agentic_active = True
+        self._agentic_trace = {"reasoning": "", "subquestions": [], "iterations": []}
+        self._agentic_trace_md = ""
+        self._run_js("startAiMessage()")
+        self.input_edit.setEnabled(False)
+        self.mic_btn.set_enabled_stt(False)
+        self.send_btn.setText("⏹")
+        self.send_btn.setStyleSheet(
+            "QPushButton { background: #dc2626; color: white; border: none; "
+            "border-radius: 4px; font-size: 14px; font-weight: 600; }"
+            "QPushButton:hover { background: #ef4444; }"
+        )
+        self.send_btn.setEnabled(True)
+        self.sources_group.setVisible(False)
+
+    def on_agentic_trace(self, stage: str, payload: dict):
+        """AgenticWorker.trace_signal 수신 — 추론 과정 트레이스 갱신/표시."""
+        if stage == "plan":
+            self._agentic_trace["reasoning"] = payload.get("reasoning", "")
+            self._agentic_trace["subquestions"] = payload.get("subquestions", [])
+        elif stage == "iteration":
+            self._agentic_trace["iterations"].append(payload)
+        elif stage == "synthesis_start":
+            # 합성 시작: 트레이스를 '접힘'으로 확정하고, 이후 답변 토큰은 그 아래에 누적
+            self._agentic_trace_md = self._render_agentic_trace(open_=False)
+            self._streaming_buf = self._agentic_trace_md + "\n\n"
+            self._run_js(
+                f"streamingBuffer={json.dumps(self._streaming_buf)};renderStreamingBuffer()"
+            )
+            return
+        # plan/iteration 진행 중: 트레이스를 '펼침'으로 라이브 표시
+        self._streaming_buf = self._render_agentic_trace(open_=True)
+        self._run_js(
+            f"streamingBuffer={json.dumps(self._streaming_buf)};renderStreamingBuffer()"
+        )
+
+    def _render_agentic_trace(self, open_: bool) -> str:
+        """추론 과정을 접이식 <details> HTML 블록으로 렌더링 (marked.js가 raw HTML 통과)."""
+        t = self._agentic_trace
+        open_attr = " open" if open_ else ""
+        parts = [
+            f'<details{open_attr} style="background:#161922;border:1px solid #2a3045;'
+            f'border-radius:8px;padding:6px 10px;margin:4px 0;font-size:12px;">',
+            '<summary style="cursor:pointer;color:#a78bfa;font-weight:600;">🧭 추론 과정</summary>',
+        ]
+        if t.get("reasoning"):
+            parts.append(
+                f'<div style="color:#94a3b8;margin:6px 0;">{_esc(t["reasoning"])}</div>'
+            )
+        subs = t.get("subquestions", [])
+        if subs:
+            parts.append('<div style="color:#cbd5e1;margin-top:4px;"><b>계획 — 하위 질문</b></div>')
+            parts.append('<ol style="margin:4px 0 6px 18px;color:#cbd5e1;">')
+            for s in subs:
+                q = _esc(s.get("q", ""))
+                queries = " · ".join(_esc(x) for x in s.get("queries", []))
+                parts.append(
+                    f'<li>{q}<div style="color:#64748b;font-size:11px;">🔎 {queries}</div></li>'
+                )
+            parts.append('</ol>')
+        for it in t.get("iterations", []):
+            idx = it.get("index", 0) + 1
+            n_ev = it.get("n_evidence", 0)
+            suff = it.get("sufficient", False)
+            badge = "✅ 충분" if suff else "↻ 보강 필요"
+            badge_color = "#34d399" if suff else "#fbbf24"
+            parts.append(
+                f'<div style="margin-top:6px;border-top:1px dashed #2a3045;padding-top:4px;">'
+                f'<span style="color:#60a5fa;font-weight:600;">반복 {idx}</span> '
+                f'<span style="color:#94a3b8;">· 근거 {n_ev}개 · </span>'
+                f'<span style="color:{badge_color};">{badge}</span></div>'
+            )
+            qs = it.get("queries", [])
+            if qs:
+                parts.append(
+                    f'<div style="color:#64748b;font-size:11px;margin-left:8px;">'
+                    f'검색어: {" · ".join(_esc(x) for x in qs)}</div>'
+                )
+            missing = it.get("missing", [])
+            if missing and not suff:
+                parts.append(
+                    f'<div style="color:#fbbf24;font-size:11px;margin-left:8px;">'
+                    f'부족: {", ".join(_esc(x) for x in missing)}</div>'
+                )
+            fq = it.get("followup_queries", [])
+            if fq and not suff:
+                parts.append(
+                    f'<div style="color:#64748b;font-size:11px;margin-left:8px;">'
+                    f'후속 검색어: {" · ".join(_esc(x) for x in fq)}</div>'
+                )
+        parts.append('</details>')
+        return "".join(parts)
+
+    def on_agentic_finished(self, answer: str, result: dict):
+        """AgenticWorker.finished_signal 수신."""
         self._is_streaming = False
+        self._agentic_active = False
+        self._streaming_buf = ""
+        # 트레이스(접힘) + 답변을 합쳐 저장 → 히스토리 복원 시에도 추론 과정 유지
+        trace_block = self._agentic_trace_md or self._render_agentic_trace(open_=False)
+        full_content = (trace_block + "\n\n" + answer) if answer else trace_block
+        self._messages.append({"role": "assistant", "content": full_content})
+
+        # 출처 노트북 추출
+        source_nbs = []
+        if result:
+            seen = set()
+            for d in result.get("all_docs", []) or []:
+                nb = getattr(d, "metadata", {}).get("notebook") if hasattr(d, "metadata") else None
+                if nb and nb not in seen:
+                    seen.add(nb)
+                    source_nbs.append(nb)
+        self._last_source_notebooks = source_nbs
+        self._last_mode = "agentic"
+
+        msg_id = str(uuid.uuid4())
+        last_user = ""
+        for m in reversed(self._messages[:-1]):
+            if m["role"] == "user":
+                last_user = m["content"]
+                break
+        self._recent_messages[msg_id] = {
+            "query": last_user,
+            "answer": full_content,
+            "source_notebooks": source_nbs,
+            "mode": "agentic",
+        }
+        if len(self._recent_messages) > 100:
+            self._recent_messages.pop(next(iter(self._recent_messages)))
+
+        self._run_js(
+            f"streamingBuffer={json.dumps(full_content)};"
+            f"finishAiMessage({json.dumps(msg_id)})"
+        )
+        self._render_sources(result)
+        self.input_edit.setEnabled(True)
+        self._restore_send_btn()
+        self.status_label.setText("")
+        self.example_bar.setVisible(False)
+
+    def on_error(self, msg: str):
+        """LLMWorker / AgenticWorker.error_signal 수신"""
+        self._is_streaming = False
+        self._agentic_active = False
         self._streaming_buf = ""
         self._run_js("finishAiMessage()")
         self.status_label.setText(f"❌ 오류: {msg}")
         self.input_edit.setEnabled(True)
-        self.send_btn.setEnabled(True)
-        self.mic_btn.set_enabled_stt(True)
+        self._restore_send_btn()
 
     def update_suggested_chips(self, queries: list[str]):
         """추천 검색어 칩 업데이트"""
@@ -878,7 +1060,12 @@ class ChatTab(QWidget):
         v_docs = result.get("vector_docs", [])[:3]
         b_docs = result.get("bm25_docs",   [])[:3]
         g_docs = result.get("graph_docs",  [])[:3]
+        a_docs = result.get("agentic_docs", [])[:5]
 
+        if a_docs:
+            html += '<div style="font-weight:600;color:#a78bfa;margin:6px 0 2px;font-size:11px;">🧭 검색 근거</div>'
+            for d in a_docs:
+                html += _doc_card(d, "tag-graph", "Agentic")
         if v_docs:
             html += '<div style="font-weight:600;color:#60a5fa;margin:6px 0 2px;font-size:11px;">📐 Vector RAG</div>'
             for d in v_docs:
@@ -894,7 +1081,7 @@ class ChatTab(QWidget):
 
         html += "</body></html>"
 
-        if v_docs or b_docs or g_docs:
+        if v_docs or b_docs or g_docs or a_docs:
             self.sources_display.setHtml(html)
 
     def _clear_layout(self, layout):

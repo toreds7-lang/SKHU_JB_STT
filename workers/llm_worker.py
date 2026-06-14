@@ -282,6 +282,110 @@ class ForceWorker(QThread):
             self.error_signal.emit(str(e))
 
 
+class AgenticWorker(QThread):
+    """Agentic Mode: 계획 → 검색 팬아웃 → 충분성 게이트 → 합성 (스트리밍).
+
+    기존 노트북 RAG 인덱스(rag_sys)를 검색 도구로 재사용한다. LangGraph RAG
+    파이프라인과는 독립적이며, ForceWorker 와 동일한 워커 패턴을 따른다.
+    """
+    status_signal   = pyqtSignal(str)         # 단계 상태 메시지
+    trace_signal    = pyqtSignal(str, dict)   # (stage, payload) — 추론 과정 트레이스
+    chunk_received  = pyqtSignal(str)          # 토큰 단위 스트리밍 (ChatTab.on_chunk_received 재사용)
+    finished_signal = pyqtSignal(str, dict)    # (full_answer, result)
+    error_signal    = pyqtSignal(str)
+
+    def __init__(self, llm, rag_sys: dict, query: str,
+                 conversation_history: list | None = None,
+                 max_iters: int | None = None, fanout_k: int | None = None):
+        super().__init__()
+        self.llm                  = llm
+        self.rag_sys              = rag_sys
+        self.query                = query
+        self.conversation_history = conversation_history or []
+        self.max_iters            = max_iters
+        self.fanout_k             = fanout_k
+        self._stopped             = False
+
+    def stop(self):
+        self._stopped = True
+
+    def run(self):
+        try:
+            from agentic_rag import NotebookRetrieverAdapter, run_agentic_rag
+
+            adapter = NotebookRetrieverAdapter(self.rag_sys)
+
+            def trace_cb(stage: str, payload):
+                """dataclass/ dict payload 를 UI용 순수 dict 로 변환해 emit."""
+                if self._stopped:
+                    return
+                if stage == "plan":
+                    p = payload if isinstance(payload, dict) else {}
+                    self.trace_signal.emit("plan", {
+                        "reasoning": str(p.get("reasoning", "")),
+                        "subquestions": [
+                            {"q": str(s.get("q", "")),
+                             "queries": [str(q) for q in s.get("queries", [])]}
+                            for s in p.get("subquestions", []) if isinstance(s, dict)
+                        ],
+                    })
+                    self.status_signal.emit("🧭 계획 수립 중…")
+                elif stage == "iteration":
+                    self.trace_signal.emit("iteration", {
+                        "index":            payload.index,
+                        "queries":          list(payload.queries),
+                        "n_evidence":       payload.n_evidence,
+                        "sufficient":       payload.sufficient,
+                        "missing":          list(payload.missing),
+                        "followup_queries": list(payload.followup_queries),
+                    })
+                    self.status_signal.emit(f"🔍 검색 반복 {payload.index + 1}…")
+                elif stage == "synthesis_start":
+                    self.trace_signal.emit("synthesis_start", {"n_evidence": int(payload)})
+                    self.status_signal.emit("🤖 답변 생성 중…")
+
+            self.status_signal.emit("🧭 계획 수립 중…")
+
+            evidence_out: list = []
+            answer = ""
+            for token in run_agentic_rag(
+                llm          = self.llm,
+                adapter      = adapter,
+                question     = self.query,
+                history      = self.conversation_history,
+                trace_cb     = trace_cb,
+                is_stopped   = lambda: self._stopped,
+                max_iters    = self.max_iters,
+                fanout_k     = self.fanout_k,
+                evidence_out = evidence_out,
+            ):
+                if self._stopped:
+                    break
+                answer += token
+                self.chunk_received.emit(token)
+
+            # 출처 표기 (중지되지 않았고 근거가 있을 때만)
+            if not self._stopped and evidence_out and answer:
+                src_map: dict = {}
+                for e in evidence_out:
+                    nb   = e.get("notebook", "unknown")
+                    cidx = e.get("cell_idx", "?")
+                    src_map.setdefault(nb, []).append(cidx)
+                src_parts = [
+                    f"{nb} (셀 {', '.join(f'#{c}' for c in sorted(set(idxs), key=str))})"
+                    for nb, idxs in src_map.items()
+                ]
+                citation = "\n\n---\n📎 **출처**: " + " · ".join(src_parts)
+                answer += citation
+                self.chunk_received.emit("\x00CITATION\x00" + citation)
+
+            docs = [e["doc"] for e in evidence_out if e.get("doc") is not None]
+            self.finished_signal.emit(answer, {"all_docs": docs, "agentic_docs": docs})
+
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
+
 class ExampleQuestionsWorker(QThread):
     """예시 질문 생성 (백그라운드)"""
     finished_signal = pyqtSignal(list)

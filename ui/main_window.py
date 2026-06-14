@@ -24,7 +24,7 @@ from ui.dir_tab        import DirTab
 from ui.cached_responses_tab import CachedResponsesTab
 from ui.wiki_tab       import KnowledgeGraphTab
 from workers.llm_worker import (
-    RagBuildWorker, LLMWorker, ForceWorker,
+    RagBuildWorker, LLMWorker, ForceWorker, AgenticWorker,
     ExampleQuestionsWorker, SuggestedQueriesWorker, SummaryWorker,
     NotebookChatWorker, WikiBuildWorker, WikiQAWorker,
 )
@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         self._rag_worker:     RagBuildWorker | None = None
         self._llm_worker:     LLMWorker | None = None
         self._force_worker:   ForceWorker | None = None
+        self._agentic_worker: AgenticWorker | None = None
         self._eq_worker:      ExampleQuestionsWorker | None = None
         self._sq_worker:      SuggestedQueriesWorker | None = None
         self._summary_worker: SummaryWorker | None = None
@@ -359,10 +360,21 @@ class MainWindow(QMainWindow):
             return True, q[2:].strip()
         return False, query
 
+    @staticmethod
+    def _detect_agentic_mode(query: str):
+        """'/a 질문' 형태 감지. Agentic Mode면 (True, 질문), 아니면 (False, query)."""
+        q = query.strip()
+        q = re.sub(r'^[／∕⁄]', '/', q)
+        if q.lower().startswith("/a ") or (q.lower().startswith("/a") and len(q) > 2):
+            return True, q[2:].strip()
+        return False, query
+
     def _on_query(self, query: str, is_suggested: bool):
         if self._llm_worker and self._llm_worker.isRunning():
             return
         if self._force_worker and self._force_worker.isRunning():
+            return
+        if self._agentic_worker and self._agentic_worker.isRunning():
             return
 
         # /f 감지
@@ -394,6 +406,31 @@ class MainWindow(QMainWindow):
             self._force_worker.finished_signal.connect(self._on_force_finished)
             self._force_worker.error_signal.connect(self.chat_tab.on_error)
             self._force_worker.start()
+            return
+
+        # Agentic Mode: /a 접두어 또는 채팅 탭 모드 선택기가 '에이전트'
+        is_agentic, agentic_query = self._detect_agentic_mode(query)
+        if is_agentic or self.chat_tab.current_mode() == "agentic":
+            actual_query = agentic_query if is_agentic else query
+            if not self.state.rag_ready:
+                QMessageBox.information(self, "알림", "먼저 RAG 시스템을 구축해 주세요.")
+                return
+
+            self.chat_tab.start_agentic(actual_query)
+            conversation_history = self.chat_tab.get_history_for_llm(max_turns=3)
+
+            self._agentic_worker = AgenticWorker(
+                llm                  = self.state.llm,
+                rag_sys              = self.state.rag_sys,
+                query                = actual_query,
+                conversation_history = conversation_history,
+            )
+            self._agentic_worker.status_signal.connect(self.chat_tab.status_label.setText)
+            self._agentic_worker.trace_signal.connect(self.chat_tab.on_agentic_trace)
+            self._agentic_worker.chunk_received.connect(self.chat_tab.on_chunk_received)
+            self._agentic_worker.finished_signal.connect(self._on_agentic_finished)
+            self._agentic_worker.error_signal.connect(self.chat_tab.on_error)
+            self._agentic_worker.start()
             return
 
         # 일반 RAG 쿼리 (/lec 포함)
@@ -431,9 +468,30 @@ class MainWindow(QMainWindow):
         if self._force_worker and self._force_worker.isRunning():
             self._force_worker.stop()
 
+    def _on_agentic_finished(self, answer: str, result: dict):
+        self.chat_tab.on_agentic_finished(answer, result)
+
+        # 후속 쿼리 생성 (답변이 있을 때만)
+        if answer and self.state.llm:
+            last_query = ""
+            for msg in reversed(self.chat_tab._messages):
+                if msg["role"] == "user":
+                    last_query = msg["content"]
+                    break
+            if last_query:
+                self._sq_worker = SuggestedQueriesWorker(
+                    self.state.llm, last_query, answer
+                )
+                self._sq_worker.finished_signal.connect(
+                    self.chat_tab.update_suggested_chips
+                )
+                self._sq_worker.start()
+
     def _on_llm_stop(self):
         if self._llm_worker and self._llm_worker.isRunning():
             self._llm_worker.stop()
+        if self._agentic_worker and self._agentic_worker.isRunning():
+            self._agentic_worker.stop()
 
     def _on_llm_finished(self, answer: str, result: dict):
         self.chat_tab.on_streaming_finished(answer, result)

@@ -40,3 +40,13 @@ TRACE_DEBUG=false
 # ── STT (Speech-to-Text) ────────────────────────────────────
 # Whisper 모델 크기: small 또는 medium
 STT_MODEL=small
+
+# ── Agentic Mode (계획 기반 에이전트 검색) ───────────────────
+# 오케스트레이터가 (검색→평가→보강)을 반복할 수 있는 최대 횟수
+AGENTIC_MAX_ITERS=3
+# 검색어 하나가 노트북 인덱스에서 가져오는 청크 수
+AGENTIC_FANOUT_K=5
+# 작업 컨텍스트에 유지하는 누적 근거 상한 (점수 높은 것 우선)
+AGENTIC_MAX_SNIPPETS=24
+# 한 패스에서 계획/재작성기가 내놓을 수 있는 검색어 수 상한
+AGENTIC_MAX_QUERIES=8

@@ -50,8 +50,9 @@ Copy `.env` (or `env.txt`) to set these variables before running:
 | `ui/graph_tab.py` | 그래프 탐색 탭 |
 | `ui/notebook_tab.py` | 노트북 뷰어 탭 |
 | `ui/dir_tab.py` | 디렉토리 트리 탭 |
-| `workers/llm_worker.py` | QThread 워커 (RagBuildWorker, LLMWorker, ForceWorker, ExampleQuestionsWorker, SuggestedQueriesWorker, SummaryWorker, NotebookChatWorker) |
+| `workers/llm_worker.py` | QThread 워커 (RagBuildWorker, LLMWorker, ForceWorker, AgenticWorker, ExampleQuestionsWorker, SuggestedQueriesWorker, SummaryWorker, NotebookChatWorker) |
 | `rag_core.py` | RAG 비즈니스 로직 (UI 무관) — 파싱, 인덱싱, 검색, Force Mode, 요약, 노트북 채팅 함수 |
+| `agentic_rag.py` | Agentic Mode 비즈니스 로직 (UI 무관) — 계획/검색 팬아웃/충분성 게이트/합성, 노트북 retriever 어댑터 |
 | `env_loader.py` | env.txt 로더 |
 
 ### 2. Streamlit 앱 (레거시, 미사용)
@@ -111,6 +112,29 @@ RAG 파이프라인과 완전히 분리된 **병렬** 검색 모드. 채팅 입�
   - `ui/config_panel.py`: `force_workers_spin` QSpinBox (병렬 워커 수, 실시간 반영)
   - `ui/main_window.py`: `_detect_force_mode()` → ForceWorker 생성/관리 (병렬 워커 수 전달)
 - FAISS/BM25/Graph 인덱스 불필요 (LLM 설정만 필요)
+
+### Agentic Mode (계획 기반 에이전트 검색)
+
+기존 노트북 RAG 인덱스 위에서 동작하는 **다단계 계획형** 검색 모드. 단일 검색 후 답하는 일반 RAG와 달리,
+질문을 분해하고 근거가 충분해질 때까지 반복 검색한다. 복합·비교·"모두 나열"형 질문에 유리.
+`D:\2026_Agent\1_Understanding_fast\pure_planning_agentic_rag`의 순수 계획형 루프를 이식했다.
+
+- **루프**: 계획(질문 분해 → 검색어 재작성) → 검색 팬아웃(검색어별 병렬 top-k) → 충분성 게이트(충분?/부족 시 후속 검색어) → (최대 `AGENTIC_MAX_ITERS`회 반복) → 합성(근거 기반 스트리밍 답변)
+- **검색 도구**: 기존 `rag_sys["ensemble_retriever"]`(Vector+BM25)를 재사용 (별도 인덱스/PDF 적재 불필요). 따라서 RAG 시스템이 먼저 구축되어 있어야 함.
+- **LLM**: 별도 클라이언트 없이 앱의 `self.state.llm`(ChatOpenAI)을 그대로 사용 → 새 의존성 없음.
+- **트리거 (2가지)**:
+  - 채팅 입력행의 **모드 선택기** 콤보박스에서 `🧭 에이전트` 선택 (지속 적용)
+  - `/a 질문` **접두어** (1회성 강제, 선택기보다 우선). 전각 슬래시(／) 등 자동 변환. `/f`(Force)가 `/a`보다 먼저 검사됨.
+- **추론 과정 트레이스**: 답변 위에 접이식 `<details>🧭 추론 과정` 블록으로 계획(하위 질문)·반복별(검색어/근거 수/충분성/부족 항목/후속 검색어)을 표시. 진행 중에는 펼침, 합성 시작 시 접힘. `marked.js`가 raw HTML을 통과시키므로 `chat.html` 수정 불필요.
+- **출처**: 합성 후 최종 근거의 노트북·셀을 `📎 출처` 블록으로 답변에 덧붙임 (일반 RAG와 동일 UX).
+- **중지**: 스트리밍 중 ⏹ 버튼 → `llm_stop_requested` → `MainWindow._on_llm_stop()`가 AgenticWorker도 중단 (일반 모드와 버튼 공유). 루프/스트림 매 단계 `is_stopped()` 협조적 취소.
+- **시스템 프롬프트**: `prompts/agentic_planner_prompt.txt`, `prompts/agentic_sufficiency_prompt.txt`, `prompts/agentic_synthesis_prompt.txt` (없으면 코드 내 한국어 기본값 사용)
+- **PyQt6 구현**:
+  - `agentic_rag.py`: `NotebookRetrieverAdapter`, `run_agentic_rag()`, `plan()`, `search_fanout()`, `assess_sufficiency()`, `synthesize()`, `chat_json()`, 프롬프트 로더 3종
+  - `workers/llm_worker.py`: `AgenticWorker` QThread (signals: `status_signal`, `trace_signal`, `chunk_received`, `finished_signal`, `error_signal`)
+  - `ui/chat_tab.py`: `mode_combo`(모드 선택기), `current_mode()`, `start_agentic()`, `on_agentic_trace()`, `_render_agentic_trace()`, `on_agentic_finished()`
+  - `ui/main_window.py`: `_detect_agentic_mode()` → AgenticWorker 생성/관리, `_on_agentic_finished()`
+- **파라미터** (`config.txt`): `AGENTIC_MAX_ITERS`(3), `AGENTIC_FANOUT_K`(5), `AGENTIC_MAX_SNIPPETS`(24), `AGENTIC_MAX_QUERIES`(8)
 
 ### External Link Handling (외부 링크)
 
@@ -195,6 +219,10 @@ RAG 파이프라인과 완전히 분리된 **병렬** 검색 모드. 채팅 입�
 | `MAX_DOCS` | 10 | Max merged context documents |
 | `LLM_TEMPERATURE` | 0.2 | LLM response temperature |
 | `TRACE_DEBUG` | false | 쿼리별 retriever 결과를 trace_logs/에 저장 |
+| `AGENTIC_MAX_ITERS` | 3 | Agentic Mode 검색→평가→보강 최대 반복 횟수 |
+| `AGENTIC_FANOUT_K` | 5 | Agentic Mode 검색어당 top-k |
+| `AGENTIC_MAX_SNIPPETS` | 24 | Agentic Mode 누적 근거 상한 |
+| `AGENTIC_MAX_QUERIES` | 8 | Agentic Mode 한 패스 검색어 수 상한 |
 
 ### Trace Debug Logging (트레이스 디버그)
 
@@ -215,18 +243,22 @@ RAG 검색 파이프라인의 디버깅을 위한 retriever별 결과 로깅 기
 | `main.py` | PyQt6 앱 진입점 |
 | `ui/main_window.py` | MainWindow (탭/패널 조립, 워커 관리) |
 | `ui/config_panel.py` | 좌측 설정 패널 |
-| `ui/chat_tab.py` | 채팅 탭 (스트리밍, 답변 중지, Force Mode UI, 외부 링크) |
+| `ui/chat_tab.py` | 채팅 탭 (스트리밍, 답변 중지, 모드 선택기, Force Mode UI, Agentic 트레이스, 외부 링크) |
 | `ui/docs_tab.py` | 문서 탐색 탭 |
 | `ui/graph_tab.py` | 그래프 탐색 탭 |
 | `ui/notebook_tab.py` | 노트북 뷰어 탭 (Jupyter 스타일 렌더링 + 셀 Q&A 채팅) |
 | `ui/dir_tab.py` | 디렉토리 트리 탭 |
-| `workers/llm_worker.py` | QThread 워커 (RAG빌드, LLM, Force, 예시질문, 후속쿼리, 노트북채팅) |
+| `workers/llm_worker.py` | QThread 워커 (RAG빌드, LLM, Force, Agentic, 예시질문, 후속쿼리, 노트북채팅) |
 | `rag_core.py` | RAG 비즈니스 로직 (UI 무관) |
+| `agentic_rag.py` | Agentic Mode 비즈니스 로직 (계획/검색/게이트/합성, UI 무관) |
 | `env_loader.py` | env.txt 환경변수 로더 |
 | `notebook_rag_agent.py` | **레거시** Streamlit 앱 (미사용, 수정 금지) |
 | `work/` | Lecture notebook directory (`.ipynb` files) |
 | `prompts/system_prompt.txt` | Optional custom LLM system prompt |
 | `prompts/force_prompt.txt` | Force Mode system prompt (관련성 판단용) |
+| `prompts/agentic_planner_prompt.txt` | Agentic Mode 계획/질의 재작성 프롬프트 |
+| `prompts/agentic_sufficiency_prompt.txt` | Agentic Mode 충분성 게이트 프롬프트 |
+| `prompts/agentic_synthesis_prompt.txt` | Agentic Mode 합성(답변) 프롬프트 |
 | `prompts/summary_prompt.txt` | Notebook summary system prompt |
 | `prompts/notebook_chat_prompt.txt` | Notebook cell chat system prompt |
 | `resources/notebook_viewer.html` | Jupyter 스타일 노트북 셀 렌더러 |
