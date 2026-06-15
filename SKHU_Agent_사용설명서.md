@@ -7,9 +7,86 @@ header: 'SKHU Agent V1.0'
 footer: '박종범 강사 · jongbum3.park@sk.com'
 ---
 
+<style>
+footer {
+  text-align: right;
+}
+</style>
+
 # Coding Based Education Is Almost Solved
 
 ### *You can teach yourself by yourself*
+
+---
+
+## Problem Definition (1/3) — Motivation & Problem
+
+<style scoped>
+section { font-size: 88%; }
+span.kw { color: #e05c00; font-weight: bold; }
+</style>
+
+**Motivation**
+- <span class="kw">LLM 추론 비용</span>의 급격한 감소로 셀 단위 의미 평가가 대규모로 실용화됨
+- <span class="kw">Jupyter Notebook</span>은 ML·데이터 과학·알고리즘 교육의 사실상 표준 형식으로 자리잡음
+- 그러나 기존 도구는 문서 전체를 검색 단위로 취급하며, <span class="kw">셀(cell)</span>을 독립 검색 단위로 다루지 않음
+- 학생들은 수업 외 시간에 <span class="kw">키워드 검색</span> 또는 <span class="kw">전체 재독</span>이라는 비효율적 수단에 의존
+
+**Problem**
+- 대학 코딩 강의는 지식을 <span class="kw">.ipynb</span> 형식으로 배포하지만, 강의 자료 누적 시 탐색 비용이 급증
+- 수업 외 시간에 특정 코드·개념을 <span class="kw">쿼리·교차 참조</span>할 효율적 수단이 부재
+- <span class="kw">키워드 검색</span>은 코드의 의미적 맥락을 포착하지 못하고, <span class="kw">전체 재독</span>은 시간 소모적
+- <span class="kw">비동기 학습 환경</span>에서 강사에게 즉시 질문할 수 없어 자기주도 이해에 큰 장벽 존재
+
+---
+
+## Problem Definition (2/3) — Research Questions & Objective
+
+<style scoped>
+section { font-size: 88%; }
+span.kw { color: #e05c00; font-weight: bold; }
+</style>
+
+**Research Questions**
+- **Q1.** <span class="kw">하이브리드 검색</span>(Vector + BM25 + Graph)이 키워드 검색 대비 코드·개념 Q&A 정확도를 향상시키는가?
+- **Q2.** <span class="kw">Force Mode</span>(전 셀 LLM 평가)가 인덱스 기반 검색보다 정밀 코드 탐색에서 더 높은 <span class="kw">재현율</span>을 달성하는가?
+- **Q3.** <span class="kw">Agentic Mode</span>(계획 기반 다단계 에이전트)가 복합·비교·"모두 나열" 형 질문에 단일 패스 RAG보다 더 완전한 답변을 생성하는가?
+
+**Objective**
+- <span class="kw">하이브리드 RAG 파이프라인</span>(Vector + BM25 + Graph RAG)으로 `.ipynb` 강의 자료의 <span class="kw">셀 단위 의미 검색</span> 지원
+- 검색 전략 단계적 확장: <span class="kw">일반 RAG</span> → <span class="kw">Force Mode</span> → <span class="kw">Agentic Mode</span> (질문 복잡도에 따라 선택)
+- <span class="kw">자기주도 학습</span>이 가능한 대화형 강의 보조 시스템 구축 — 강사 부재 시에도 지도 교육에 준하는 이해 달성
+- 강의 자료 변경 시 <span class="kw">자동 재색인</span> 및 <span class="kw">지식 그래프·위키 자동 생성</span>으로 지속적 학습 지원
+
+---
+
+## Problem Definition (3/3) — System Model & Constraints
+
+<style scoped>
+section { font-size: 86%; }
+span.kw { color: #e05c00; font-weight: bold; }
+</style>
+
+**System Model**
+- 입력: 쿼리 *q* + N개 Jupyter 노트북 코퍼스 *D* (각 노트북 → 셀 *c₁…cₖ* 분해)
+- 검색: <span class="kw">Vector(FAISS)</span> + <span class="kw">BM25</span> + <span class="kw">Graph RAG</span> 병렬 수행 후 앙상블 병합 (최대 10 docs)
+- 출력: <span class="kw">셀 출처 *S ⊆ D*</span>와 함께, 검색된 근거만으로 생성된 근거 기반 답변 *a*
+
+**Assumptions**
+- 셀 경계가 의미 있게 구성됨 (셀당 하나의 개념 또는 코드 블록)
+- <span class="kw">kiwipiepy</span> 한국어 형태소 분석으로 기술 한국어 텍스트의 BM25 재현율 향상
+- <span class="kw">FAISS 인덱스</span>가 대상 코퍼스 크기(< 10,000 셀)에서 호스트 RAM 내 적재 가능
+
+**Success Criteria**
+- 사실적 답변의 ≥ 80%에서 <span class="kw">관련 셀 출처</span> 인용
+- Force Mode: 상위 5개 청크 내 <span class="kw">목표 코드 스니펫</span> 반환
+- Agentic Mode: <span class="kw">3회 반복</span> 내 모든 하위 질문 완전 커버
+
+**Constraints**
+- 입력 코퍼스 <span class="kw">.ipynb</span> 한정 (PDF · `.py` · 텍스트 파일 제외)
+- <span class="kw">외부 LLM API</span> 필수 (OpenAI 또는 호환 로컬 엔드포인트); 온디바이스 추론 미지원
+- 노트북 변경 시 <span class="kw">수동 인덱스 재구축</span> 필요 (실시간 증분 인덱싱 미지원)
+- Agentic Mode · Wiki 생성은 <span class="kw">완성된 RAG 인덱스</span> 선행 필요
 
 ---
 
@@ -73,7 +150,28 @@ FORCE_WORKERS=3
 
 ---
 
-## 5. ⌨️ 단축키 — 노트북 뷰어 셀 분석
+## 5. ⌨️ 단축키 — 전역 · 입력창 공통
+
+**전역 단축키** (어느 탭에서나 동작)
+
+| 단축키 | 동작 |
+|--------|------|
+| `F1` | 도움말 팝업 표시 |
+| `Ctrl+B` | 좌측 **설정 패널** 접기 / 펼치기 |
+| `Ctrl+F` | 노트북 탭 **목록 패널** 접기 / 펼치기 |
+
+**입력창 공통** (채팅 탭 · 노트북 셀 Q&A · 지식 그래프 Q&A)
+
+| 단축키 | 동작 |
+|--------|------|
+| `Enter` | 메시지 전송 |
+| `Shift+Enter` | 입력창 줄바꿈 |
+| `↑` | 이전 입력 기록으로 이동 |
+| `↓` | 다음 입력 기록으로 이동 |
+
+---
+
+## 6. ⌨️ 단축키 — 노트북 뷰어 셀 분석
 
 노트북 셀 뷰어에서 텍스트를 선택하거나 단어를 더블클릭한 뒤 사용합니다.
 
@@ -83,21 +181,11 @@ FORCE_WORKERS=3
 | `Ctrl+D` | Python **정의 및 문법 설명** (Define) | 단어 선택 또는 더블클릭 후 |
 | `Ctrl+S` | 선택 텍스트 **단계별 상세 설명** (Explain) | 텍스트 드래그 선택 후 |
 | `Ctrl+P` | 선택 텍스트를 **채팅 입력창에 붙여넣기** | 텍스트 드래그 선택 후 |
+| `Ctrl+=` / `Ctrl++` | 셀·요약 뷰 **글꼴 크기 확대** | 셀·요약 탭 포커스 시 |
+| `Ctrl+-` | 셀·요약 뷰 **글꼴 크기 축소** | 셀·요약 탭 포커스 시 |
+| `Ctrl+0` | 글꼴 크기 **기본값(13px)으로 초기화** | 셀·요약 탭 포커스 시 |
 
 > 결과는 우측 셀 채팅 패널에 스트리밍으로 표시됩니다.
-
----
-
-## 6. ⌨️ 단축키 — 패널 토글
-
-앱 어느 탭에서나 사용할 수 있는 전역 단축키입니다.
-
-| 단축키 | 동작 |
-|--------|------|
-| `Ctrl+B` | 좌측 **설정 패널** 접기 / 펼치기 |
-| `Ctrl+F` | 노트북 탭 **목록 패널** 접기 / 펼치기 |
-
-> 화면을 넓게 쓰고 싶을 때 패널을 빠르게 숨길 수 있습니다.
 
 ---
 
@@ -209,7 +297,58 @@ FORCE_WORKERS=3
 
 ---
 
-## 14. 🎤 Record 버튼 — 음성으로 입력 만들기
+## 14. 💬 채팅 탭 — Agentic Mode `/a`
+
+`/a` 접두어 또는 모드 선택기에서 **🧭 에이전트** 선택 = **계획 기반 다단계 검색**
+
+```
+/a 랭그래프에서 메모리와 체크포인터의 차이점을 모두 설명해줘
+```
+
+**동작 흐름**: 질문 분해 → 검색어별 병렬 검색 → 충분성 평가 → (부족 시 추가 검색 반복) → 최종 합성
+
+| 항목 | 일반 RAG | Agentic Mode |
+|------|----------|-------------|
+| 검색 횟수 | 1회 | 최대 3회 반복 |
+| 적합 상황 | 단순 질문 | 복합·비교·"모두 나열" 질문 |
+
+- 답변 위 **🧭 추론 과정** 블록에 계획·반복별 검색어·근거 수 표시
+- `/a`는 1회성, 모드 선택기는 탭을 닫기 전까지 계속 적용
+- `/f`(Force)가 `/a`보다 우선 검사됨
+
+---
+
+## 15. 🗺️ 지식 그래프 탭 — 위키 생성
+
+RAG 빌드 완료 시 노트북 내용으로 **지식 그래프 + 위키**를 자동 생성합니다.
+
+- 노트북 디렉토리가 바뀌지 않으면 **캐시에서 즉시 로드** (재생성 불필요)
+- **🔨 위키 재생성** 버튼으로 강제 재빌드 가능
+- 생성 중 ⏹ 중지 버튼으로 즉시 취소
+
+**생성 결과**
+- 📊 **그래프 뷰** — 노드(개념)·엣지(관계)를 SVG로 시각화, `Ctrl+스크롤`로 줌
+- 📄 **위키 문서 탭** — 노트북별 마크다운 위키 목록
+- 📋 **노트북 탭** — 원본 노트북 요약 표
+- 💡 **개념 탭** — 전체 개념 목록 테이블
+
+---
+
+## 16. 🗺️ 지식 그래프 탭 — 위키 Q&A
+
+생성된 위키를 바탕으로 **빠른 Q&A** 검색을 지원합니다.
+
+1. 하단 입력창에 질문 입력 → Enter 또는 전송 버튼
+2. 위키 문서에서 관련 내용을 검색하여 스트리밍 답변
+3. 🗑 **초기화** 버튼으로 대화 히스토리 비우기
+4. ⏹ 중지 버튼으로 스트리밍 즉시 종료
+
+> RAG 채팅 탭이 **노트북 셀 단위** 검색이라면,  
+> 위키 Q&A는 **정리된 위키 문서** 기반으로 더 빠른 개념 검색에 적합합니다.
+
+---
+
+## 17. 🎤 Record 버튼 — 음성으로 입력 만들기
 
 채팅 입력창 옆 **마이크 버튼**으로 음성을 텍스트로 변환합니다.
 
@@ -224,7 +363,7 @@ FORCE_WORKERS=3
 
 ---
 
-## 15. 💾 캐시 응답 탭
+## 18. 💾 캐시 응답 탭
 
 지난 AI 답변을 자동 저장해 **다시 보기**·**복습**용으로 제공합니다.
 
@@ -237,7 +376,7 @@ FORCE_WORKERS=3
 
 ---
 
-## 16. 📂 `prompts/` 폴더 — 프롬프트 커스터마이징
+## 19. 📂 `prompts/` 폴더 — 프롬프트 커스터마이징
 
 | 파일 | 적용 위치 |
 |------|-----------|
@@ -245,6 +384,9 @@ FORCE_WORKERS=3
 | `notebook_chat_prompt.txt` | 노트북 셀 채팅 (요약/전체 모드) |
 | `summary_prompt.txt` | 노트북 요약 생성 (✏️ 버튼으로 편집) |
 | `force_prompt.txt` | Force Mode 관련성 판단 |
+| `agentic_planner_prompt.txt` | Agentic Mode — 질문 분해·검색어 재작성 |
+| `agentic_sufficiency_prompt.txt` | Agentic Mode — 충분성 게이트 판단 |
+| `agentic_synthesis_prompt.txt` | Agentic Mode — 최종 답변 합성 |
 
 - 파일이 **없으면** 내장 기본 프롬프트가 사용됩니다.
 - 저장 후 **다음 호출부터** 즉시 반영.
@@ -255,4 +397,3 @@ FORCE_WORKERS=3
 # 끝.
 
 질문 / 피드백 → **jongbum3.park@sk.com**
-
