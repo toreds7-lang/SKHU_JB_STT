@@ -458,6 +458,14 @@ _AUTO_EXPLAIN_QUESTION = (
 )
 
 
+# ── 실행 결과 예측 (run-predict) 상수 ─────────────────────────────────────────
+# 실제 지시문 텍스트는 prompts/notebook_run_predict_prompt.txt (없으면 기본값) ─
+# rag_core.load_run_predict_prompt() 에서 로드합니다.
+
+_AUTO_RUN_SENTINEL = "__AUTO_RUN__"
+_AUTO_RUN_DISPLAY  = "[노트북 실행 결과 예측 요청]"
+
+
 # ── NotebookTab ──────────────────────────────────────────────────────────────
 
 class NotebookTab(QWidget):
@@ -474,6 +482,10 @@ class NotebookTab(QWidget):
         self._summaries: dict[str, str] = {}
         self._summary_prompt_hashes: dict[str, str] = {}  # name → 해당 요약 생성에 쓰인 프롬프트 md5
         self._stale_summaries: set[str] = set()
+        self._run_predictions: dict[str, str] = {}        # notebook → 실행 예측 텍스트 (최신 1개)
+        self._run_prediction_hashes: dict[str, str] = {}   # notebook → 예측 생성 시점의 파일 md5
+        self._run_prediction_prompt_hashes: dict[str, str] = {}  # notebook → 예측 생성 시점의 프롬프트 md5
+        self._pending_is_run_predict: bool = False         # 진행 중인 요청이 실행 예측인지 여부
         self._cache_dir: str = ".rag_cache"
         self._current_nb: str = ""
         self._summary_font_size = 13
@@ -906,10 +918,24 @@ class NotebookTab(QWidget):
         self.full_mode_btn = QPushButton("전체 모드")
         self.full_mode_btn.setStyleSheet(_TOGGLE_INACTIVE)
         self.full_mode_btn.clicked.connect(lambda: self._set_context_mode("full"))
+        self.run_predict_btn = QPushButton("▶ 실행 예측")
+        self.run_predict_btn.setStyleSheet(_SEND_BTN_STYLE)
+        self.run_predict_btn.setToolTip(
+            "노트북 전체를 처음부터 끝까지 실행한다고 가정하고 LLM이 결과를 예측합니다 "
+            "(실제 실행 아님). 변경 없으면 캐시된 결과를 재사용합니다."
+        )
+        self.run_predict_btn.clicked.connect(self._on_run_predict_click)
+        self.force_run_predict_btn = QPushButton("🔄")
+        self.force_run_predict_btn.setFixedWidth(28)
+        self.force_run_predict_btn.setStyleSheet(_SEND_BTN_STYLE)
+        self.force_run_predict_btn.setToolTip("캐시를 무시하고 강제로 다시 예측")
+        self.force_run_predict_btn.clicked.connect(self._on_force_run_predict_click)
         mode_row.addWidget(mode_label)
         mode_row.addWidget(self.summary_mode_btn)
         mode_row.addWidget(self.full_mode_btn)
         mode_row.addStretch()
+        mode_row.addWidget(self.run_predict_btn)
+        mode_row.addWidget(self.force_run_predict_btn)
         chat_layout.addLayout(mode_row)
 
         # 채팅 디스플레이 (QWebEngineView) — 저장 버튼 콘솔 메시지를 받기 위해 _ChatLinkPage 사용
@@ -1222,6 +1248,52 @@ class NotebookTab(QWidget):
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
+    def _run_predict_cache_path(self) -> Path:
+        return Path(self._cache_dir) / "run_predict_cache.json"
+
+    def _load_run_predict_cache(self):
+        cache_path = self._run_predict_cache_path()
+        if not cache_path.exists():
+            return
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+
+        from rag_core import get_file_md5, get_run_predict_prompt_hash
+        current_prompt_hash = get_run_predict_prompt_hash()
+        for name, entry in data.items():
+            nb_path = self._get_nb_path(name)
+            if nb_path and os.path.exists(nb_path):
+                current_hash = get_file_md5(nb_path)
+                if entry.get("hash") == current_hash and entry.get("prompt_hash") == current_prompt_hash:
+                    self._run_predictions[name] = entry["prediction"]
+                    self._run_prediction_hashes[name] = current_hash
+                    self._run_prediction_prompt_hashes[name] = current_prompt_hash
+
+    def _save_run_predict_cache(self, notebook_name: str, prediction: str,
+                                 file_hash: str, prompt_hash: str):
+        os.makedirs(self._cache_dir, exist_ok=True)
+        cache_path = self._run_predict_cache_path()
+
+        data: dict = {}
+        if cache_path.exists():
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+
+        data[notebook_name] = {
+            "hash": file_hash,
+            "prompt_hash": prompt_hash,
+            "prediction": prediction,
+        }
+
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
     # ── 프롬프트 파일 감시 (핫 리로드 + stale 재평가) ──────────────────────────
 
     _SUMMARY_PROMPT_PATH = "prompts/summary_prompt.txt"
@@ -1333,6 +1405,56 @@ class NotebookTab(QWidget):
         # 선택된 셀 가져오기 (비동기 JS 콜백)
         self._run_viewer_js("getSelectedCells()", lambda result: self._on_cells_selected(result, question))
 
+    # ── 실행 결과 예측 (run-predict) ──────────────────────────────────────────
+
+    def _on_run_predict_click(self):
+        if self._is_streaming or not self._current_nb:
+            return
+        nb = self._current_nb
+        cached = self._run_predictions.get(nb)
+        if cached is not None:
+            from rag_core import get_file_md5, get_run_predict_prompt_hash
+            nb_path = self._get_nb_path(nb)
+            current_hash = get_file_md5(nb_path) if nb_path and os.path.exists(nb_path) else ""
+            current_prompt_hash = get_run_predict_prompt_hash()
+            if (
+                current_hash
+                and self._run_prediction_hashes.get(nb) == current_hash
+                and self._run_prediction_prompt_hashes.get(nb) == current_prompt_hash
+            ):
+                self._set_context_mode("full")
+                self._show_cached_run_prediction(nb, cached)
+                return
+        self._run_predict_uncached()
+
+    def _on_force_run_predict_click(self):
+        if self._is_streaming or not self._current_nb:
+            return
+        self._run_predict_uncached()
+
+    def _run_predict_uncached(self):
+        """캐시 무시 또는 캐시 미스 → 항상 전체 노트북을 대상으로 LLM에 새로 질의."""
+        self._set_context_mode("full")
+        self._on_cells_selected([], _AUTO_RUN_SENTINEL)
+
+    def _show_cached_run_prediction(self, nb: str, prediction: str):
+        """캐시 적중 시 LLM 호출 없이 기존 스트리밍 JS 경로로 즉시 표시."""
+        from rag_core import load_run_predict_prompt
+        llm_q = load_run_predict_prompt()
+        ctx_text = f"노트북 실행 예측 ({nb}) — 캐시됨"
+        self._run_chat_js(f"showSelectedContext({json.dumps(ctx_text)})")
+        self._run_chat_js(f"appendUserMessage({json.dumps(_AUTO_RUN_DISPLAY)})")
+        self._run_chat_js("removeStatus()")
+        self._run_chat_js("startAiMessage()")
+        self._run_chat_js(f"streamingBuffer = {json.dumps(prediction)}; renderStreamingBuffer();")
+        msg_id = str(uuid.uuid4())
+        self._run_chat_js(f"finishAiMessage({json.dumps(msg_id)})")
+        self._chat_history.append({"role": "user", "content": llm_q})
+        self._chat_history.append({"role": "assistant", "content": prediction})
+        self._recent_messages[msg_id] = {
+            "nb": nb, "question": llm_q, "answer": prediction, "cell_indices": [],
+        }
+
     def _on_word_graph_requested(self, word: str):
         """더블클릭 + Ctrl+W로 선택된 단어의 연관 관계 분석 요청"""
         if self._is_streaming or not word or not self._current_nb:
@@ -1424,13 +1546,22 @@ class NotebookTab(QWidget):
         nb_name = self._current_nb
         summary = self._summaries.get(nb_name, "")
 
-        # 자동 설명 모드 판별: 화면에는 마커만, LLM에는 확장된 지시문
-        is_auto = (question == _AUTO_EXPLAIN_SENTINEL)
-        display_q = _AUTO_EXPLAIN_DISPLAY if is_auto else question
-        llm_q     = _AUTO_EXPLAIN_QUESTION if is_auto else question
+        # 자동 설명 / 실행 예측 모드 판별: 화면에는 마커만, LLM에는 확장된 지시문
+        is_auto_explain = (question == _AUTO_EXPLAIN_SENTINEL)
+        is_auto_run = (question == _AUTO_RUN_SENTINEL)
+        self._pending_is_run_predict = is_auto_run
+        if is_auto_explain:
+            display_q, llm_q = _AUTO_EXPLAIN_DISPLAY, _AUTO_EXPLAIN_QUESTION
+        elif is_auto_run:
+            from rag_core import load_run_predict_prompt
+            display_q, llm_q = _AUTO_RUN_DISPLAY, load_run_predict_prompt()
+        else:
+            display_q = llm_q = question
 
         # 채팅 UI에 사용자 메시지 표시
-        if selected:
+        if is_auto_run:
+            ctx_text = f"노트북 실행 예측 ({nb_name})"
+        elif selected:
             cell_indices = [c.get("cell_idx", "?") for c in selected]
             ctx_text = f"선택된 셀: {', '.join(f'#{i}' for i in cell_indices)} ({nb_name})"
         elif self._context_mode == "full":
@@ -1489,6 +1620,8 @@ class NotebookTab(QWidget):
         self.send_btn.clicked.connect(self._on_chat_stop)
         self.chat_input.setEnabled(False)
         self.mic_btn.set_enabled_stt(False)
+        self.run_predict_btn.setEnabled(False)
+        self.force_run_predict_btn.setEnabled(False)
 
     def _restore_chat_btn(self):
         """중지 버튼 → 전송 버튼으로 복원"""
@@ -1502,6 +1635,8 @@ class NotebookTab(QWidget):
         self.send_btn.clicked.connect(self._on_chat_send)
         self.chat_input.setEnabled(True)
         self.mic_btn.set_enabled_stt(True)
+        self.run_predict_btn.setEnabled(True)
+        self.force_run_predict_btn.setEnabled(True)
         self.chat_input.setFocus()
 
     def _on_chat_stop(self):
@@ -1670,6 +1805,19 @@ class NotebookTab(QWidget):
                 entry_id=msg_id,
             )
 
+        # 실행 결과 예측 응답이면 노트북당 최신 1개로 캐시 (다음 클릭 시 LLM 재호출 스킵)
+        if self._pending_is_run_predict and answer:
+            from rag_core import get_file_md5, get_run_predict_prompt_hash
+            nb_path = self._get_nb_path(nb)
+            file_hash = get_file_md5(nb_path) if nb_path and os.path.exists(nb_path) else ""
+            if file_hash:
+                prompt_hash = get_run_predict_prompt_hash()
+                self._run_predictions[nb] = answer
+                self._run_prediction_hashes[nb] = file_hash
+                self._run_prediction_prompt_hashes[nb] = prompt_hash
+                self._save_run_predict_cache(nb, answer, file_hash, prompt_hash)
+
+        self._pending_is_run_predict = False
         self._last_chat_question = ""
         self._pending_nb_name = ""
         self._pending_cell_indices = []
@@ -1721,8 +1869,18 @@ class NotebookTab(QWidget):
             k: v for k, v in self._summaries.items() if k in new_nbs
         }
         self._stale_summaries = {k for k in self._stale_summaries if k in new_nbs}
+        self._run_predictions = {
+            k: v for k, v in self._run_predictions.items() if k in new_nbs
+        }
+        self._run_prediction_hashes = {
+            k: v for k, v in self._run_prediction_hashes.items() if k in new_nbs
+        }
+        self._run_prediction_prompt_hashes = {
+            k: v for k, v in self._run_prediction_prompt_hashes.items() if k in new_nbs
+        }
 
         self._load_summary_cache()
+        self._load_run_predict_cache()
 
         self.nb_list.blockSignals(True)
         self.nb_list.clear()

@@ -1160,6 +1160,33 @@ def prepare_notebook_chat_prompt(
     return "\n".join(parts)
 
 
+# ── 노트북 실행 결과 예측 (Run Predict) ──────────────────────────────────────
+
+
+def load_run_predict_prompt() -> str:
+    """notebook_run_predict_prompt.txt에서 실행 결과 예측 지시문을 로드합니다."""
+    _fp = Path("prompts/notebook_run_predict_prompt.txt")
+    if _fp.exists():
+        return _fp.read_text(encoding="utf-8").strip()
+    return (
+        "이 노트북을 처음부터 끝까지 실제 Python/Jupyter 커널에서 실행한다고 가정하고, "
+        "각 코드 셀의 실행 결과를 예측해 주세요. 실제로 코드를 실행하는 것이 아니라 "
+        "**예측**이라는 점을 답변 맨 앞에 한 줄로 명시하세요.\n\n"
+        "규칙:\n"
+        "- 코드 셀을 순서대로 모의 실행하면서 변수·함수·임포트 상태를 다음 셀까지 이어갑니다.\n"
+        "- 각 코드 셀마다 `### 셀 #N 실행 결과` 제목 아래, 예상되는 표준출력(print 등)과 "
+        "마지막 줄이 표현식이면 Jupyter처럼 자동 출력되는 값을 코드블록으로 보여주세요.\n"
+        "- 에러가 발생할 것으로 예상되면 Traceback 형태로 표시하고, 그로 인해 이후 셀이 "
+        "영향을 받는 부분까지 예측합니다.\n"
+        "- 마크다운 셀은 건너뛰고 코드 셀만 대상으로 합니다."
+    )
+
+
+def get_run_predict_prompt_hash() -> str:
+    """현재 실행 예측 프롬프트의 MD5 해시를 반환합니다. 캐시 무효화 판단에 사용됩니다."""
+    return hashlib.md5(load_run_predict_prompt().encode()).hexdigest()
+
+
 # ── Wiki 생성 (Knowledge Graph) ─────────────────────────────────────────────
 
 def slug(name: str) -> str:

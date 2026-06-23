@@ -68,6 +68,7 @@ a = Analysis(
         ("prompts/force_prompt.txt",   "prompts"),
         ("prompts/summary_prompt.txt",        "prompts"),
         ("prompts/notebook_chat_prompt.txt", "prompts"),
+        ("prompts/notebook_run_predict_prompt.txt", "prompts"),
         ("resources/dark_theme.qss", "resources"),
         ("resources/chat.html",            "resources"),
         ("resources/summary.html",         "resources"),
