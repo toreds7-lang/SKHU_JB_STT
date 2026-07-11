@@ -29,6 +29,7 @@ from workers.llm_worker import (
     ExampleQuestionsWorker, SuggestedQueriesWorker, SummaryWorker,
     NotebookChatWorker, WikiBuildWorker, WikiQAWorker,
 )
+from workers.settings_worker import SettingsQAWorker, SettingsPromptRewriteWorker
 
 
 @dataclass
@@ -61,6 +62,8 @@ class MainWindow(QMainWindow):
         self._nb_chat_worker: NotebookChatWorker | None = None
         self._wiki_worker:    WikiBuildWorker | None = None
         self._wiki_qa_worker: WikiQAWorker | None = None
+        self._settings_qa_worker:      SettingsQAWorker | None = None
+        self._settings_rewrite_worker: SettingsPromptRewriteWorker | None = None
         self._last_config:    dict = {}
         self._config_collapsed: bool = False
         self._config_panel_width: int = 260
@@ -121,10 +124,10 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.chat_tab,     "💬  RAG 채팅")
         self.tab_widget.addTab(self.docs_tab,     "📄  문서 탐색")
         self.tab_widget.addTab(self.graph_tab,    "🕸️  그래프 탐색")
-        self.tab_widget.addTab(self.settings_tab, "⚙️  설정")
         self.tab_widget.addTab(self.dir_tab,      "📁  디렉토리")
         self.tab_widget.addTab(self.cached_tab,   "💾  캐시 응답")
         self.tab_widget.addTab(self.wiki_tab,     "🗺️  지식 그래프")
+        self.tab_widget.addTab(self.settings_tab, "⚙️  설정")
 
         self.tab_widget.tabBar().setTabVisible(2, False)  # 문서 탐색
         self.tab_widget.tabBar().setTabVisible(3, False)  # 그래프 탐색
@@ -160,6 +163,14 @@ class MainWindow(QMainWindow):
         self.config_panel.stt_language_combo.currentIndexChanged.connect(
             lambda: self._propagate_stt_language(self.config_panel.stt_language_combo.currentData())
         )
+
+        # Settings 탭 (SPEC-SETTINGS-001 Phase 2-5)
+        self.settings_tab.qa_requested.connect(self._on_settings_qa_requested)
+        self.settings_tab.prompt_rewrite_requested.connect(self._on_settings_rewrite_requested)
+        self.settings_tab.rebuild_requested.connect(self._on_settings_rebuild_requested)
+        self.settings_tab.file_saved.connect(self._on_settings_file_saved)
+        self._current_tab_index = self.tab_widget.currentIndex()
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
         # 캐시 응답 동기화 (실시간)
         self.notebook_tab.cache_updated.connect(self.cached_tab.refresh)
@@ -341,6 +352,7 @@ class MainWindow(QMainWindow):
         self.cached_tab.set_cache_dir(cfg["cache_dir"])
         self.wiki_tab.set_cache_dir(cfg["cache_dir"])
         self.wiki_tab.set_nb_dir(cfg["nb_dir"])
+        self.settings_tab.set_cache_dir(cfg["cache_dir"])
         self.graph_tab.load_graph(rag_sys["graph"])
         self.notebook_tab.set_cache_dir(cfg["cache_dir"])
         self.notebook_tab.load_cells(rag_sys["cells"])
@@ -666,6 +678,62 @@ class MainWindow(QMainWindow):
         if self._wiki_worker and self._wiki_worker.isRunning():
             self._wiki_worker.stop()
 
+    # ── Settings 탭 (SPEC-SETTINGS-001 Phase 2-5) ────────────────────────────
+
+    def _on_settings_qa_requested(self, prompt: str):
+        if not self.state.llm:
+            self.settings_tab.on_qa_error("LLM이 설정되지 않았습니다. RAG 시스템을 먼저 구축해 주세요.")
+            return
+        if self._settings_qa_worker and self._settings_qa_worker.isRunning():
+            return
+
+        self._settings_qa_worker = SettingsQAWorker(self.state.llm, prompt)
+        self._settings_qa_worker.chunk_received.connect(self.settings_tab.on_qa_chunk)
+        self._settings_qa_worker.finished_signal.connect(self.settings_tab.on_qa_finished)
+        self._settings_qa_worker.error_signal.connect(self.settings_tab.on_qa_error)
+        self._settings_qa_worker.start()
+
+    def _on_settings_rewrite_requested(self, prompt: str):
+        if not self.state.llm:
+            self.settings_tab.on_rewrite_error("LLM이 설정되지 않았습니다. RAG 시스템을 먼저 구축해 주세요.")
+            return
+        if self._settings_rewrite_worker and self._settings_rewrite_worker.isRunning():
+            return
+
+        self._settings_rewrite_worker = SettingsPromptRewriteWorker(self.state.llm, prompt)
+        self._settings_rewrite_worker.finished_signal.connect(self.settings_tab.on_rewrite_finished)
+        self._settings_rewrite_worker.error_signal.connect(self.settings_tab.on_rewrite_error)
+        self._settings_rewrite_worker.start()
+
+    def _on_settings_rebuild_requested(self):
+        """Settings 탭에서 'Rebuild Now'를 선택한 경우 — 기존 RAG 재구축 경로를 재사용."""
+        if self._last_config:
+            self._on_build_rag(self._last_config)
+
+    def _on_settings_file_saved(self, rel_path: str):
+        """저장/초기화된 설정 파일에 따라 필요한 만큼만 인메모리 상태를 새로고침.
+
+        나머지 프롬프트 파일들(force/summary/notebook_chat/agentic_*)은 이미
+        매 호출마다 디스크에서 새로 읽으므로 별도 리로드가 필요 없다.
+        """
+        import rag_core
+        if rel_path == "config.txt":
+            rag_core.RAG_CONFIG = rag_core._load_config()
+        elif rel_path == "prompts/system_prompt.txt":
+            self.state.sys_prompt = rag_core.load_system_prompt()
+
+    def _on_tab_changed(self, new_index: int):
+        """Settings 탭에서 저장하지 않은 편집이 있으면 탭 전환 전 확인 (F-SETTINGS-4)."""
+        old_index = self._current_tab_index
+        settings_index = self.tab_widget.indexOf(self.settings_tab)
+        if old_index == settings_index and new_index != settings_index:
+            if not self.settings_tab.confirm_leave():
+                self.tab_widget.blockSignals(True)
+                self.tab_widget.setCurrentIndex(settings_index)
+                self.tab_widget.blockSignals(False)
+                return
+        self._current_tab_index = self.tab_widget.currentIndex()
+
     def _on_wiki_qa(self, question: str):
         """Wiki Q&A 요청"""
         if not self.state.llm:
@@ -708,6 +776,7 @@ class MainWindow(QMainWindow):
         for worker in [self._rag_worker, self._llm_worker, self._force_worker,
                        self._eq_worker, self._sq_worker, self._summary_worker,
                        self._nb_chat_worker, self._wiki_worker, self._wiki_qa_worker,
+                       self._settings_qa_worker, self._settings_rewrite_worker,
                        self.chat_tab._recorder, self.chat_tab._stt_worker,
                        self.notebook_tab._recorder, self.notebook_tab._stt_worker]:
             if worker and worker.isRunning():

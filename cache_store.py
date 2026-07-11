@@ -218,3 +218,67 @@ class ChatCache:
             for nb in e.get("source_notebooks", []) or []:
                 s.add(nb)
         return sorted(s)
+
+
+class SettingsChatCache:
+    """Settings 탭 Q&A 히스토리 (SPEC-SETTINGS-001 §4.2).
+
+    ChatCache와 동일한 JSONL append-only 패턴. 노트북별로 나뉘지 않는 단일
+    채팅 패널이므로 {id, ts, file, question, answer} 평평한 레코드 하나로
+    저장한다.
+    """
+    FILENAME = "settings_chat.jsonl"
+
+    def __init__(self, cache_dir: str):
+        self._cache_dir = cache_dir
+        self._lock = Lock()
+
+    @property
+    def path(self) -> Path:
+        return Path(self._cache_dir) / self.FILENAME
+
+    def _read_all(self) -> list:
+        if not self.path.exists():
+            return []
+        entries = []
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            return []
+        return entries
+
+    def add(self, file: str, question: str, answer: str,
+            entry_id: str | None = None) -> str:
+        with self._lock:
+            os.makedirs(self._cache_dir, exist_ok=True)
+            entry = {
+                "id": entry_id or str(uuid.uuid4()),
+                "ts": _now_iso(),
+                "file": file,
+                "question": question,
+                "answer": answer,
+            }
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            return entry["id"]
+
+    def load(self) -> list:
+        """전체 항목을 저장 순서대로 반환."""
+        with self._lock:
+            return self._read_all()
+
+    def clear(self):
+        with self._lock:
+            if self.path.exists():
+                try:
+                    self.path.unlink()
+                except OSError:
+                    pass

@@ -180,3 +180,218 @@ def test_prompt_entries_have_prompt_category(settings_files):
 
 def test_build_config_metadata_is_callable():
     assert callable(rag_core.build_config_metadata)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STT_MODEL metadata (Phase 2-5 gap fix — SPEC §2.2 F-SETTINGS-8 category map)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_stt_model_is_known_config_key():
+    entry = rag_core._CONFIG_METADATA_CATALOG["STT_MODEL"]
+    assert entry["category"] == "STT"
+    assert entry["default"] == "small"
+
+
+def test_stt_model_reflected_in_built_metadata(tmp_path):
+    config_file = tmp_path / "config.txt"
+    config_file.write_text("STT_MODEL=medium\n", encoding="utf-8")
+    meta = rag_core.build_config_metadata(
+        env_path=str(tmp_path / "missing_env.txt"),
+        config_path=str(config_file),
+        prompts_dir=str(tmp_path / "prompts"),
+    )
+    assert meta["config"]["STT_MODEL"]["known"] is True
+    assert meta["config"]["STT_MODEL"]["value"] == "medium"
+    assert meta["config"]["STT_MODEL"]["category"] == "STT"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# load_system_prompt()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_load_system_prompt_returns_default_when_missing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    text = rag_core.load_system_prompt()
+    assert "AI 튜터" in text
+
+
+def test_load_system_prompt_reads_override_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "system_prompt.txt").write_text("커스텀 프롬프트", encoding="utf-8")
+    assert rag_core.load_system_prompt() == "커스텀 프롬프트"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# find_config_key_in_question()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_find_config_key_matches_known_key(settings_files):
+    meta = rag_core.build_config_metadata()
+    assert rag_core.find_config_key_in_question("VECTOR_K가 뭐야?", meta) == "VECTOR_K"
+
+
+def test_find_config_key_is_case_insensitive(settings_files):
+    meta = rag_core.build_config_metadata()
+    assert rag_core.find_config_key_in_question("what does vector_k do", meta) == "VECTOR_K"
+
+
+def test_find_config_key_returns_none_for_unknown(settings_files):
+    meta = rag_core.build_config_metadata()
+    assert rag_core.find_config_key_in_question("오늘 날씨 어때?", meta) is None
+
+
+def test_find_config_key_prefers_longer_match(settings_files):
+    meta = rag_core.build_config_metadata()
+    # Both "GRAPH_K" and "GRAPH_HOPS" are known keys; a question naming the
+    # longer/more specific key must not resolve to the shorter substring.
+    assert rag_core.find_config_key_in_question("GRAPH_HOPS는 뭐야?", meta) == "GRAPH_HOPS"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# build_settings_qa_prompt()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_build_settings_qa_prompt_includes_authoritative_fields(settings_files):
+    meta = rag_core.build_config_metadata()
+    entry = meta["config"]["VECTOR_K"]
+    prompt = rag_core.build_settings_qa_prompt("VECTOR_K가 뭐야?", "VECTOR_K", entry, entry["value"])
+    assert "VECTOR_K" in prompt
+    assert "1-20" in prompt
+    assert "한국어" in prompt or "Korean" in prompt
+    assert "Current value: 7" in prompt
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# mask_sensitive_value()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_mask_sensitive_value_masks_when_flagged():
+    entry = {"mask_in_ui": True}
+    assert rag_core.mask_sensitive_value("OPENAI_API_KEY", "sk-abcdef123", entry) == "sk-***"
+
+
+def test_mask_sensitive_value_passes_through_when_not_flagged():
+    entry = {"mask_in_ui": False}
+    assert rag_core.mask_sensitive_value("LLM_MODEL", "gpt-4o-mini", entry) == "gpt-4o-mini"
+
+
+def test_mask_sensitive_value_handles_missing_entry():
+    assert rag_core.mask_sensitive_value("ANYTHING", "value", None) == "value"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# validate_kv_text()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_validate_kv_text_accepts_valid_values(settings_files):
+    section = rag_core.build_config_metadata()["config"]
+    errors = rag_core.validate_kv_text("VECTOR_K=10\nMAX_DOCS=20\n", section)
+    assert errors == []
+
+
+def test_validate_kv_text_rejects_out_of_range_int(settings_files):
+    section = rag_core.build_config_metadata()["config"]
+    errors = rag_core.validate_kv_text("VECTOR_K=99\n", section)
+    assert any("VECTOR_K" in e for e in errors)
+
+
+def test_validate_kv_text_rejects_non_numeric_int(settings_files):
+    section = rag_core.build_config_metadata()["config"]
+    errors = rag_core.validate_kv_text("VECTOR_K=abc\n", section)
+    assert any("정수" in e for e in errors)
+
+
+def test_validate_kv_text_rejects_out_of_range_float(settings_files):
+    section = rag_core.build_config_metadata()["config"]
+    errors = rag_core.validate_kv_text("SEQ_DECAY=5.0\n", section)
+    assert any("SEQ_DECAY" in e for e in errors)
+
+
+def test_validate_kv_text_ignores_unknown_keys(settings_files):
+    section = rag_core.build_config_metadata()["config"]
+    errors = rag_core.validate_kv_text("MY_CUSTOM_KEY=anything goes\n", section)
+    assert errors == []
+
+
+def test_validate_kv_text_ignores_comments_and_blank_lines(settings_files):
+    section = rag_core.build_config_metadata()["config"]
+    errors = rag_core.validate_kv_text("# a comment\n\nVECTOR_K=5\n", section)
+    assert errors == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# classify_config_changes()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_classify_config_changes_detects_rebuild_affecting_key(settings_files):
+    meta = rag_core.build_config_metadata()
+    old_text = "VECTOR_K=5\nMAX_DOCS=10\n"
+    new_text = "VECTOR_K=8\nMAX_DOCS=10\n"
+    result = rag_core.classify_config_changes(old_text, new_text, meta)
+    assert result["requires_rebuild"] is True
+    assert "VECTOR_K" in result["affected_keys"]
+
+
+def test_classify_config_changes_non_rebuild_key(settings_files):
+    meta = rag_core.build_config_metadata()
+    old_text = "MAX_DOCS=10\n"
+    new_text = "MAX_DOCS=20\n"
+    result = rag_core.classify_config_changes(old_text, new_text, meta)
+    assert result["requires_rebuild"] is False
+    assert result["affected_keys"] == ["MAX_DOCS"]
+
+
+def test_classify_config_changes_flags_unknown_keys(settings_files):
+    meta = rag_core.build_config_metadata()
+    old_text = "MY_KEY=1\n"
+    new_text = "MY_KEY=2\n"
+    result = rag_core.classify_config_changes(old_text, new_text, meta)
+    assert result["unknown_keys"] == ["MY_KEY"]
+    assert result["requires_rebuild"] is False
+
+
+def test_classify_config_changes_no_diff_is_empty(settings_files):
+    meta = rag_core.build_config_metadata()
+    text = "VECTOR_K=5\n"
+    result = rag_core.classify_config_changes(text, text, meta)
+    assert result == {"requires_rebuild": False, "affected_keys": [], "unknown_keys": []}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# reset_config_defaults()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_reset_config_defaults_resets_known_keys(settings_files):
+    meta = rag_core.build_config_metadata()
+    current = "VECTOR_K=99\nMAX_DOCS=50\n"
+    result = rag_core.reset_config_defaults(current, meta)
+    assert "VECTOR_K=5" in result
+    assert "MAX_DOCS=10" in result
+
+
+def test_reset_config_defaults_preserves_custom_keys(settings_files):
+    meta = rag_core.build_config_metadata()
+    current = "VECTOR_K=99\nMY_CUSTOM_KEY=keep-me\n"
+    result = rag_core.reset_config_defaults(current, meta)
+    assert "MY_CUSTOM_KEY=keep-me" in result
+
+
+def test_reset_config_defaults_preserves_comments(settings_files):
+    meta = rag_core.build_config_metadata()
+    current = "# a helpful comment\nVECTOR_K=99\n"
+    result = rag_core.reset_config_defaults(current, meta)
+    assert "# a helpful comment" in result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# build_prompt_rewrite_request()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_build_prompt_rewrite_request_includes_all_parts():
+    prompt = rag_core.build_prompt_rewrite_request(
+        "Prompt", "RAG 채팅 기본 시스템 프롬프트.", "현재 프롬프트 텍스트", "더 간결하게 만들어줘"
+    )
+    assert "현재 프롬프트 텍스트" in prompt
+    assert "더 간결하게 만들어줘" in prompt
+    assert "prompt engineer" in prompt.lower()

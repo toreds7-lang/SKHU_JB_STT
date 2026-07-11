@@ -160,6 +160,7 @@ _CONFIG_METADATA_CATALOG: dict[str, dict] = {
     "AGENTIC_FANOUT_K":     {"type": "int", "category": "Agentic", "default": 5,  "min": 1, "max": 20,  "description": "Agentic Mode 검색어당 top-k."},
     "AGENTIC_MAX_SNIPPETS": {"type": "int", "category": "Agentic", "default": 24, "min": 1, "max": 100, "description": "Agentic Mode 누적 근거 상한."},
     "AGENTIC_MAX_QUERIES":  {"type": "int", "category": "Agentic", "default": 8,  "min": 1, "max": 20,  "description": "Agentic Mode 한 패스 검색어 수 상한."},
+    "STT_MODEL":       {"type": "str",   "category": "STT",       "default": "small", "choices": ["small", "medium"], "description": "Whisper STT 모델 크기 (small 또는 medium)."},
 }
 
 # Documented prompt files under prompts/ (SPEC F-SETTINGS-1). These seven are a
@@ -258,6 +259,280 @@ def build_config_metadata(env_path: str | None = None,
         }
 
     return {"env": env_section, "config": config_section, "prompts": prompts_section}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Settings Tab: Q&A / Editing / Validation / Reset (SPEC-SETTINGS-001 Phase 2-5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DEFAULT_SYSTEM_PROMPT = """당신은 Jupyter Notebook 강의 자료를 분석하는 친절한 AI 튜터입니다.
+반드시 주어진 컨텍스트(노트북 셀 내용)만을 근거로 답변하세요.
+
+답변 방식:
+- 처음 접하는 학습자도 이해할 수 있도록 최대한 쉽고 친근한 말투로 설명합니다.
+- 개념은 간단한 비유나 예시를 들어 직관적으로 이해할 수 있게 합니다.
+- 단계별로 나눠서 논리적인 흐름이 보이도록 자세히 설명합니다.
+- 중요한 용어나 핵심 개념은 별도로 강조해서 설명합니다.
+
+규칙:
+1. 컨텍스트에 있는 내용만 사용합니다. 컨텍스트 외부 지식은 절대 사용하지 마세요.
+2. 코드 셀이 있으면 해당 코드를 직접 인용하고, 각 줄이 무엇을 하는지 단계별로 상세히 설명합니다.
+3. 마크다운 셀이 있으면 개념 설명에 적극 활용합니다.
+4. 답변은 한국어로 작성합니다.
+5. 코드 예시는 ```python 블록으로 감쌉니다.
+6. 컨텍스트에 없는 내용은 절대 추측하지 말고 "제공된 노트북에서 해당 내용을 찾을 수 없습니다"라고 답변하세요."""
+
+
+def load_system_prompt() -> str:
+    """system_prompt.txt에서 RAG 채팅 기본 시스템 프롬프트를 로드합니다.
+
+    파일이 없으면 내장 기본값을 반환합니다. make_agent()가 에이전트 생성 시
+    한 번 호출하던 로직을 재사용 가능한 함수로 추출한 것 — Settings 탭에서
+    system_prompt.txt를 저장한 뒤 AppState.sys_prompt를 다시 읽어들일 때도
+    동일한 함수를 호출한다 (SPEC §6.1 prompt reload hook).
+    """
+    _fp = Path("prompts/system_prompt.txt")
+    if _fp.exists():
+        return _fp.read_text(encoding="utf-8").strip()
+    return _DEFAULT_SYSTEM_PROMPT
+
+
+_PROMPT_FILE_DEFAULTS: dict[str, tuple[str, callable]] = {}
+
+
+def _register_prompt_defaults():
+    """지연 등록: prompts/*.txt 리셋 시 사용할 (경로, 로더) 매핑.
+
+    각 로더는 이미 존재하는 load_*_prompt() 함수를 그대로 재사용한다 — 새
+    기본값을 따로 저장하지 않고, 파일을 지웠을 때 해당 로더가 반환하는 내장
+    기본값이 곧 "built-in"이 되도록 한다.
+    """
+    global _PROMPT_FILE_DEFAULTS
+    if _PROMPT_FILE_DEFAULTS:
+        return _PROMPT_FILE_DEFAULTS
+    _PROMPT_FILE_DEFAULTS = {
+        "system_prompt.txt":              ("prompts/system_prompt.txt", load_system_prompt),
+        "force_prompt.txt":               ("prompts/force_prompt.txt", load_force_prompt),
+        "agentic_planner_prompt.txt":     ("prompts/agentic_planner_prompt.txt", None),
+        "agentic_sufficiency_prompt.txt": ("prompts/agentic_sufficiency_prompt.txt", None),
+        "agentic_synthesis_prompt.txt":   ("prompts/agentic_synthesis_prompt.txt", None),
+        "notebook_chat_prompt.txt":       ("prompts/notebook_chat_prompt.txt", load_notebook_chat_prompt),
+        "summary_prompt.txt":             ("prompts/summary_prompt.txt", load_summary_prompt),
+    }
+    return _PROMPT_FILE_DEFAULTS
+
+
+def find_config_key_in_question(question: str, config_metadata: dict) -> str | None:
+    """질문 문자열에서 CONFIG_METADATA의 알려진 키를 퍼지 매칭으로 찾는다.
+
+    env/config 섹션의 모든 known 키를 대상으로 대소문자 무시 부분 문자열
+    매칭을 수행한다. 여러 키가 매칭되면 더 긴(더 구체적인) 키를 우선한다.
+    매칭 실패 시 None (F-SETTINGS-3 "알 수 없는 파라미터" 분기로 이어짐).
+    """
+    q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
+    if not q_norm:
+        return None
+
+    candidates = []
+    for section in ("config", "env"):
+        for key, entry in config_metadata.get(section, {}).items():
+            if not entry.get("known"):
+                continue
+            key_norm = re.sub(r"[^a-z0-9]", "", key.lower())
+            if key_norm and key_norm in q_norm:
+                candidates.append(key)
+
+    if not candidates:
+        return None
+    return max(candidates, key=len)
+
+
+def build_settings_qa_prompt(question: str, key: str, entry: dict, current_value) -> str:
+    """SPEC §2.2 F-SETTINGS-3의 하이브리드(CONFIG_METADATA → LLM 재작성) 프롬프트."""
+    range_str = ""
+    if "min" in entry and "max" in entry:
+        range_str = f"{entry['min']}-{entry['max']}"
+    elif "choices" in entry:
+        range_str = "/".join(str(c) for c in entry["choices"])
+
+    authoritative = (
+        f"Parameter: {key}\n"
+        f"Description: {entry.get('description', '')}\n"
+        f"Type: {entry.get('type', 'str')}\n"
+        f"Default: {entry.get('default')}\n"
+        f"Range/Constraints: {range_str or '(없음)'}\n"
+        f"Category: {entry.get('category', 'Other')}\n"
+        f"Current value: {current_value}\n"
+        f"Affects rebuild: {entry.get('affects_rebuild', False)}"
+    )
+
+    return (
+        "You are a settings expert for SKHU Agent RAG application.\n\n"
+        f"User question: {question}\n\n"
+        "Here is the authoritative parameter information:\n"
+        f"{authoritative}\n\n"
+        "Rewrite this information in conversational Korean (2-3 sentences).\n"
+        "Include:\n"
+        "- What this parameter does\n"
+        "- How it affects the RAG system\n"
+        "- Recommended values and trade-offs\n"
+        "- (If current value differs from default) note the current value vs default\n\n"
+        "Do NOT add information not in the authoritative answer above.\n"
+        "Do NOT hallucinate parameter ranges or defaults.\n"
+        "Base your response ONLY on the provided metadata."
+    )
+
+
+def mask_sensitive_value(key: str, value: str, entry: dict | None = None) -> str:
+    """entry에 mask_in_ui=True가 설정된 키의 값을 'sk-***' 형태로 마스킹한다.
+
+    N-SETTINGS-2 (API 키 보호) — diff 미리보기와 Q&A 응답 양쪽에서 재사용.
+    """
+    if entry and entry.get("mask_in_ui") and value:
+        prefix = value[:3] if len(value) > 3 else value
+        return f"{prefix}***"
+    return value
+
+
+def validate_kv_text(text: str, metadata_section: dict) -> list[str]:
+    """KEY=VALUE 본문을 파싱해 알려진 키의 type/min/max 제약을 검증한다.
+
+    metadata_section은 보통 build_config_metadata()의 결과 일부(디스크에
+    현재 존재하는 키만 포함)이므로, 사용자가 지금 막 추가한 문서화된 키는
+    거기 없을 수 있다 — 그런 키는 정적 카탈로그(_CONFIG_METADATA_CATALOG /
+    _ENV_METADATA_CATALOG)에서 조회해 보완한다. 알 수 없는 키는 통과
+    (pass-through, Option B — SPEC §6.1)한다. 반환값이 빈 리스트면 유효함.
+    F-SETTINGS-5/6.
+    """
+    errors: list[str] = []
+    parsed = {}
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" not in stripped:
+            errors.append(f"{lineno}행: 'KEY=VALUE' 형식이 아닙니다 — {stripped!r}")
+            continue
+        key, _, value = stripped.partition("=")
+        key, value = key.strip(), value.strip()
+        parsed[key] = value
+
+        entry = metadata_section.get(key)
+        if not entry or not entry.get("known"):
+            entry = _CONFIG_METADATA_CATALOG.get(key) or _ENV_METADATA_CATALOG.get(key)
+        if not entry:
+            continue
+
+        vtype = entry.get("type", "str")
+        if vtype == "int":
+            try:
+                ivalue = int(value)
+            except ValueError:
+                errors.append(f"{key}: 정수여야 합니다 (현재: {value!r})")
+                continue
+            if "min" in entry and ivalue < entry["min"]:
+                errors.append(f"{key}: 최솟값 {entry['min']} 이상이어야 합니다 (현재: {ivalue})")
+            if "max" in entry and ivalue > entry["max"]:
+                errors.append(f"{key}: 최댓값 {entry['max']} 이하이어야 합니다 (현재: {ivalue})")
+        elif vtype == "float":
+            try:
+                fvalue = float(value)
+            except ValueError:
+                errors.append(f"{key}: 실수여야 합니다 (현재: {value!r})")
+                continue
+            if "min" in entry and fvalue < entry["min"]:
+                errors.append(f"{key}: 최솟값 {entry['min']} 이상이어야 합니다 (현재: {fvalue})")
+            if "max" in entry and fvalue > entry["max"]:
+                errors.append(f"{key}: 최댓값 {entry['max']} 이하이어야 합니다 (현재: {fvalue})")
+        elif vtype == "bool":
+            if value.lower() not in ("true", "false"):
+                errors.append(f"{key}: true 또는 false 여야 합니다 (현재: {value!r})")
+        elif "choices" in entry and value not in entry["choices"]:
+            errors.append(f"{key}: {'/'.join(entry['choices'])} 중 하나여야 합니다 (현재: {value!r})")
+
+    return errors
+
+
+def classify_config_changes(old_text: str, new_text: str, config_metadata: dict) -> dict:
+    """저장 전 config.txt의 변경 사항을 분류한다 (SPEC §6.1).
+
+    Returns: {'requires_rebuild': bool, 'affected_keys': [...], 'unknown_keys': [...]}
+    """
+    old_kv = _parse_kv_text(old_text)
+    new_kv = _parse_kv_text(new_text)
+    config_section = config_metadata.get("config", {})
+
+    affected = []
+    unknown = []
+    for key in set(old_kv) | set(new_kv):
+        if old_kv.get(key) == new_kv.get(key):
+            continue
+        affected.append(key)
+        entry = config_section.get(key)
+        if not entry or not entry.get("known"):
+            unknown.append(key)
+
+    requires_rebuild = any(k in _REBUILD_AFFECTING_KEYS for k in affected)
+
+    return {
+        "requires_rebuild": requires_rebuild,
+        "affected_keys": sorted(affected),
+        "unknown_keys": sorted(unknown),
+    }
+
+
+def _parse_kv_text(text: str) -> dict[str, str]:
+    """_parse_kv_file()과 동일한 파싱 규칙을 파일이 아닌 문자열에 적용."""
+    result: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            result[key.strip()] = value.strip()
+    return result
+
+
+def reset_config_defaults(current_text: str, config_metadata: dict) -> str:
+    """config.txt의 알려진(known) 키만 카탈로그 기본값으로 되돌린다.
+
+    알 수 없는(custom) 키와 주석/빈 줄은 그대로 보존한다 (사용자 선택:
+    "reset known keys only, keep custom keys"). 알려진 키 중 현재 파일에
+    존재하지 않는 것은 추가하지 않는다 — 파일에 있던 줄만 치환한다.
+    """
+    config_section = config_metadata.get("config", {})
+    out_lines = []
+    for line in current_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            out_lines.append(line)
+            continue
+        key, _, _value = stripped.partition("=")
+        key = key.strip()
+        entry = config_section.get(key)
+        if entry and entry.get("known") and entry.get("default") is not None:
+            out_lines.append(f"{key}={entry['default']}")
+        else:
+            out_lines.append(line)
+    return "\n".join(out_lines) + ("\n" if current_text.endswith("\n") else "")
+
+
+def build_prompt_rewrite_request(category: str, description: str,
+                                 current_text: str, user_request: str) -> str:
+    """F-SETTINGS-12: LLM-assisted prompt modification 프롬프트."""
+    return (
+        "You are a prompt engineer for SKHU Agent.\n\n"
+        f"Current prompt type: {category}\n"
+        f"Purpose: {description}\n\n"
+        "Current prompt:\n"
+        f"{current_text}\n\n"
+        "User request:\n"
+        f"{user_request}\n\n"
+        "Generate an improved prompt that addresses the request while maintaining "
+        "the original purpose. Keep Korean language support if present.\n"
+        "Return only the new prompt text (no explanations)."
+    )
 
 
 # ── 한국어 형태소 분석 ────────────────────────────────────────────────────────
@@ -763,26 +1038,7 @@ def make_agent(llm_base_url: str, llm_api_key: str, llm_model: str,
         return {**state, "all_docs": merged, "context": context,
                 "steps": ["✅ 문서 병합 완료"]}
 
-    _prompt_file = Path("prompts/system_prompt.txt")
-    if _prompt_file.exists():
-        SYSTEM_PROMPT = _prompt_file.read_text(encoding="utf-8").strip()
-    else:
-        SYSTEM_PROMPT = """당신은 Jupyter Notebook 강의 자료를 분석하는 친절한 AI 튜터입니다.
-반드시 주어진 컨텍스트(노트북 셀 내용)만을 근거로 답변하세요.
-
-답변 방식:
-- 처음 접하는 학습자도 이해할 수 있도록 최대한 쉽고 친근한 말투로 설명합니다.
-- 개념은 간단한 비유나 예시를 들어 직관적으로 이해할 수 있게 합니다.
-- 단계별로 나눠서 논리적인 흐름이 보이도록 자세히 설명합니다.
-- 중요한 용어나 핵심 개념은 별도로 강조해서 설명합니다.
-
-규칙:
-1. 컨텍스트에 있는 내용만 사용합니다. 컨텍스트 외부 지식은 절대 사용하지 마세요.
-2. 코드 셀이 있으면 해당 코드를 직접 인용하고, 각 줄이 무엇을 하는지 단계별로 상세히 설명합니다.
-3. 마크다운 셀이 있으면 개념 설명에 적극 활용합니다.
-4. 답변은 한국어로 작성합니다.
-5. 코드 예시는 ```python 블록으로 감쌉니다.
-6. 컨텍스트에 없는 내용은 절대 추측하지 말고 "제공된 노트북에서 해당 내용을 찾을 수 없습니다"라고 답변하세요."""
+    SYSTEM_PROMPT = load_system_prompt()
 
     LLM_ONLY_PROMPT = """당신은 AI 튜터입니다. 이번 질문은 강의 노트북에서 관련 문서를 찾지 못했습니다.
 일반 AI 지식을 바탕으로 최선을 다해 답변하되, 반드시 첫 줄에 다음 문구를 포함하세요:
