@@ -1,7 +1,7 @@
 ---
 id: SPEC-SETTINGS-002
-version: 0.1.0
-status: draft
+version: 0.2.0
+status: completed
 created: 2026-07-11
 updated: 2026-07-11
 author: manager-spec (MoAI Plan Workflow)
@@ -16,6 +16,7 @@ issue_number: 0
 | Version | Date       | Author       | Change                                                    |
 |---------|------------|--------------|-----------------------------------------------------------|
 | 0.1.0   | 2026-07-11 | manager-spec | Initial draft — three follow-up UX fixes for SPEC-SETTINGS-001 |
+| 0.2.0   | 2026-07-11 | manager-tdd  | Implemented via RED-GREEN-REFACTOR; 121/121 tests passing; committed as 9f6929b |
 
 ---
 
