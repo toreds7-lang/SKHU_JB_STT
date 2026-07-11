@@ -23,6 +23,7 @@ from ui.notebook_tab   import NotebookTab
 from ui.dir_tab        import DirTab
 from ui.cached_responses_tab import CachedResponsesTab
 from ui.wiki_tab       import KnowledgeGraphTab
+from ui.settings_tab   import SettingsTab
 from workers.llm_worker import (
     RagBuildWorker, LLMWorker, ForceWorker, AgenticWorker,
     ExampleQuestionsWorker, SuggestedQueriesWorker, SummaryWorker,
@@ -109,10 +110,18 @@ class MainWindow(QMainWindow):
         self.cached_tab   = CachedResponsesTab()
         self.wiki_tab     = KnowledgeGraphTab()
 
+        # 설정 파일 메타데이터 카탈로그 (SPEC-SETTINGS-001 Phase 0). 시작 시 한 번만
+        # 구축하여 Settings 탭에 전달한다. build_config_metadata는 rag_core의 heavy
+        # import를 유발하지 않도록 지연 import 패턴을 따른다.
+        from rag_core import build_config_metadata
+        self.config_metadata = build_config_metadata()
+        self.settings_tab = SettingsTab(config_metadata=self.config_metadata)
+
         self.tab_widget.addTab(self.notebook_tab, "📓  노트북 뷰어")
         self.tab_widget.addTab(self.chat_tab,     "💬  RAG 채팅")
         self.tab_widget.addTab(self.docs_tab,     "📄  문서 탐색")
         self.tab_widget.addTab(self.graph_tab,    "🕸️  그래프 탐색")
+        self.tab_widget.addTab(self.settings_tab, "⚙️  설정")
         self.tab_widget.addTab(self.dir_tab,      "📁  디렉토리")
         self.tab_widget.addTab(self.cached_tab,   "💾  캐시 응답")
         self.tab_widget.addTab(self.wiki_tab,     "🗺️  지식 그래프")

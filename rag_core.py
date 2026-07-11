@@ -83,6 +83,183 @@ def _is_trace_debug() -> bool:
     return RAG_CONFIG.get("TRACE_DEBUG", "false").lower() == "true"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Settings Metadata Catalog (SPEC-SETTINGS-001 Phase 0)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# build_config_metadata() parses env.txt / config.txt and discovers the prompt
+# files, attaching a documented static catalog (type/category/default/range/
+# description/affects_rebuild) to known keys while letting unknown keys pass
+# through. It is intentionally NOT called at import time — MainWindow invokes it
+# explicitly and hands the result to the Settings tab.
+
+# Overridable path constants (monkeypatched in tests / passed explicitly by
+# callers). Kept separate from the _load_env_txt / _load_config default args so
+# existing startup behavior is untouched.
+_SETTINGS_ENV_PATH = "env.txt"
+_SETTINGS_CONFIG_PATH = "config.txt"
+_SETTINGS_PROMPTS_DIR = "prompts"
+
+# Documented env.txt parameters (SPEC §4, §2.2 F-SETTINGS-8 category mapping).
+_ENV_METADATA_CATALOG: dict[str, dict] = {
+    "OPENAI_API_KEY": {
+        "type": "str", "required": True, "category": "API", "default": None,
+        "description": "OpenAI API 키 (sk-...). 임베딩과 LLM 호출에 필요합니다.",
+        "mask_in_ui": True,
+    },
+    "LLM_MODEL": {
+        "type": "str", "required": False, "category": "API", "default": "gpt-4o-mini",
+        "description": "LLM 모델 이름 (gpt-4o-mini, gpt-4o 등).",
+        "mask_in_ui": False,
+    },
+    "LLM_BASE_URL": {
+        "type": "str", "required": False, "category": "API", "default": "",
+        "description": "LLM API 엔드포인트. 비워두면 OpenAI, 로컬 서버(Ollama 등) 사용 시 설정.",
+        "mask_in_ui": False,
+    },
+    "EMBEDDING_MODEL": {
+        "type": "str", "required": False, "category": "API", "default": "text-embedding-ada-002",
+        "description": "임베딩 모델 이름.",
+        "mask_in_ui": False,
+    },
+    "EMBEDDING_BASE_URL": {
+        "type": "str", "required": False, "category": "API", "default": "",
+        "description": "임베딩 API 엔드포인트. 비워두면 LLM_BASE_URL/OpenAI를 따릅니다.",
+        "mask_in_ui": False,
+    },
+    "FORCE_WORKERS": {
+        "type": "int", "required": False, "category": "STT", "default": 3,
+        "min": 1, "max": 10,
+        "description": "Force Mode 병렬 워커 수 (1-10).",
+        "mask_in_ui": False,
+    },
+}
+
+# Retriever parameters whose change requires a full RAG index rebuild (SPEC
+# §6.1). Only these six trigger the rebuild-confirmation dialog in later phases.
+_REBUILD_AFFECTING_KEYS = frozenset({
+    "VECTOR_K", "BM25_K", "GRAPH_K", "GRAPH_HOPS", "SEQ_DECAY", "VAR_DECAY",
+})
+
+# Documented config.txt parameters (SPEC §4, config.txt table + F-SETTINGS-5 ranges).
+_CONFIG_METADATA_CATALOG: dict[str, dict] = {
+    "VECTOR_K":        {"type": "int",   "category": "Retrieval", "default": 5,   "min": 1,   "max": 20,  "description": "Vector retriever가 반환하는 top-k 문서 수."},
+    "BM25_K":          {"type": "int",   "category": "Retrieval", "default": 5,   "min": 1,   "max": 20,  "description": "BM25 retriever가 반환하는 top-k 문서 수."},
+    "GRAPH_K":         {"type": "int",   "category": "Retrieval", "default": 5,   "min": 1,   "max": 20,  "description": "Graph RAG가 반환하는 top-k 문서 수."},
+    "GRAPH_HOPS":      {"type": "int",   "category": "Retrieval", "default": 2,   "min": 1,   "max": 5,   "description": "Graph RAG multi-hop 전파 깊이."},
+    "SEQ_DECAY":       {"type": "float", "category": "Retrieval", "default": 0.5, "min": 0.0, "max": 1.0, "description": "인접 셀(sequential) 엣지 감쇠 계수."},
+    "VAR_DECAY":       {"type": "float", "category": "Retrieval", "default": 0.8, "min": 0.0, "max": 1.0, "description": "변수 공유(shared_var) 엣지 감쇠 계수."},
+    "KEYWORD_BOOST":   {"type": "float", "category": "Retrieval", "default": 0.4, "min": 0.0, "max": 1.0, "description": "키워드 보조 점수 부스트 계수."},
+    "SEED_COUNT":      {"type": "int",   "category": "Retrieval", "default": 3,   "min": 1,   "max": 10,  "description": "Graph RAG 시작점이 되는 vector seed 문서 수."},
+    "VECTOR_WEIGHT":   {"type": "float", "category": "Retrieval", "default": 0.6, "min": 0.0, "max": 1.0, "description": "앙상블에서 Vector 가중치 (BM25_WEIGHT와 합이 1.0)."},
+    "BM25_WEIGHT":     {"type": "float", "category": "Retrieval", "default": 0.4, "min": 0.0, "max": 1.0, "description": "앙상블에서 BM25 가중치 (VECTOR_WEIGHT와 합이 1.0)."},
+    "MAX_DOCS":        {"type": "int",   "category": "Retrieval", "default": 10,  "min": 1,   "max": 50,  "description": "최종 컨텍스트에 포함할 최대 문서 수."},
+    "LLM_TEMPERATURE": {"type": "float", "category": "LLM",       "default": 0.2, "min": 0.0, "max": 2.0, "description": "LLM 응답 temperature (낮을수록 결정적)."},
+    "TRACE_DEBUG":     {"type": "bool",  "category": "Debug",     "default": False, "description": "true이면 쿼리별 retriever 결과를 trace_logs/에 저장."},
+    "AGENTIC_MAX_ITERS":    {"type": "int", "category": "Agentic", "default": 3,  "min": 1, "max": 10,  "description": "Agentic Mode 검색→평가→보강 최대 반복 횟수."},
+    "AGENTIC_FANOUT_K":     {"type": "int", "category": "Agentic", "default": 5,  "min": 1, "max": 20,  "description": "Agentic Mode 검색어당 top-k."},
+    "AGENTIC_MAX_SNIPPETS": {"type": "int", "category": "Agentic", "default": 24, "min": 1, "max": 100, "description": "Agentic Mode 누적 근거 상한."},
+    "AGENTIC_MAX_QUERIES":  {"type": "int", "category": "Agentic", "default": 8,  "min": 1, "max": 20,  "description": "Agentic Mode 한 패스 검색어 수 상한."},
+}
+
+# Documented prompt files under prompts/ (SPEC F-SETTINGS-1). These seven are a
+# fixed catalog — build_config_metadata() reports each with an 'exists' flag so
+# the UI can distinguish files present on disk from those using built-in defaults.
+_PROMPT_METADATA_CATALOG: dict[str, str] = {
+    "system_prompt.txt":              "RAG 채팅 기본 시스템 프롬프트.",
+    "force_prompt.txt":               "Force Mode 관련성 판단 프롬프트.",
+    "agentic_planner_prompt.txt":     "Agentic Mode 계획/질의 재작성 프롬프트.",
+    "agentic_sufficiency_prompt.txt": "Agentic Mode 충분성 게이트 프롬프트.",
+    "agentic_synthesis_prompt.txt":   "Agentic Mode 합성(답변) 프롬프트.",
+    "notebook_chat_prompt.txt":       "노트북 셀 채팅 프롬프트.",
+    "summary_prompt.txt":             "노트북 요약 프롬프트.",
+}
+
+
+def _parse_kv_file(path: str) -> dict[str, str]:
+    """Parse a KEY=VALUE settings file, preserving insertion order.
+
+    Returns an empty dict when the file is missing (never raises). Blank lines
+    and '#' comment lines are ignored — same convention as _load_config().
+    """
+    result: dict[str, str] = {}
+    if not path or not os.path.exists(path):
+        return result
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                result[key.strip()] = value.strip()
+    return result
+
+
+def _build_kv_section(parsed: dict[str, str], catalog: dict[str, dict],
+                      rebuild_keys: "frozenset[str]" = frozenset()) -> dict[str, dict]:
+    """Merge parsed KEY=VALUE pairs with a static metadata catalog.
+
+    Known keys receive a copy of their catalog metadata (the catalog is never
+    mutated); unknown keys pass through with minimal inferred metadata. Every
+    entry carries its current 'value' (as read from disk) and a 'known' flag.
+    """
+    section: dict[str, dict] = {}
+    for key, value in parsed.items():
+        if key in catalog:
+            entry = dict(catalog[key])
+            entry["known"] = True
+            entry.setdefault("affects_rebuild", key in rebuild_keys)
+        else:
+            entry = {
+                "type": "str",
+                "category": "Other",
+                "default": None,
+                "description": "",
+                "known": False,
+                "affects_rebuild": False,
+            }
+        entry["value"] = value
+        section[key] = entry
+    return section
+
+
+def build_config_metadata(env_path: str | None = None,
+                          config_path: str | None = None,
+                          prompts_dir: str | None = None) -> dict[str, dict]:
+    """Build the settings-metadata catalog for the Settings tab (SPEC §4).
+
+    Parses env.txt and config.txt, attaches documented metadata to known keys,
+    passes unknown keys through unchanged, and discovers the seven prompt files
+    (each flagged as existing or missing). Missing env.txt / config.txt yield an
+    empty section rather than raising. This function is NOT invoked at import
+    time — MainWindow calls it explicitly and passes the result to SettingsTab.
+
+    Returns: {'env': {...}, 'config': {...}, 'prompts': {...}}
+    """
+    env_path = env_path if env_path is not None else _SETTINGS_ENV_PATH
+    config_path = config_path if config_path is not None else _SETTINGS_CONFIG_PATH
+    prompts_dir = prompts_dir if prompts_dir is not None else _SETTINGS_PROMPTS_DIR
+
+    env_section = _build_kv_section(_parse_kv_file(env_path), _ENV_METADATA_CATALOG)
+    config_section = _build_kv_section(
+        _parse_kv_file(config_path), _CONFIG_METADATA_CATALOG, _REBUILD_AFFECTING_KEYS
+    )
+
+    prompts_section: dict[str, dict] = {}
+    for filename, description in _PROMPT_METADATA_CATALOG.items():
+        prompts_section[filename] = {
+            "type": "file",
+            "category": "Prompt",
+            "description": description,
+            "affects_rebuild": False,
+            "known": True,
+            "exists": os.path.exists(os.path.join(prompts_dir, filename)),
+        }
+
+    return {"env": env_section, "config": config_section, "prompts": prompts_section}
+
+
 # ── 한국어 형태소 분석 ────────────────────────────────────────────────────────
 def _path_is_ascii(p: str) -> bool:
     try:
