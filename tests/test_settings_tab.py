@@ -466,13 +466,73 @@ def test_ask_known_key_emits_qa_requested(qtbot, settings_files):
     assert "VECTOR_K" in requested[0]
 
 
-def test_ask_unknown_key_does_not_emit_qa_requested(qtbot, settings_files):
+def test_ask_known_key_prompt_includes_reference_section(qtbot, settings_files):
+    # SPEC-SETTINGS-003 T6 / AC-REQ-006: the matched-key prompt must carry the
+    # reference document's section text (in addition to the authoritative metadata).
     tab = _make_tab(settings_files, qtbot)
+    requested = []
+    tab.qa_requested.connect(requested.append)
+
+    tab.qa_input.setPlainText("VECTOR_K가 뭐야?")
+    tab.ask_btn.click()
+
+    assert len(requested) == 1
+    prompt = requested[0]
+    # The reference-section marker block and its distinctive prose must appear.
+    assert "레퍼런스 문서" in prompt
+    assert "앙상블 후보 문서 폭" in prompt
+
+
+def test_ask_unknown_key_emits_grounded_qa_requested(qtbot, settings_files):
+    # SPEC-SETTINGS-003 T7 / AC-REQ-008: a cross-cutting question that matches no
+    # known key must now route through the grounded LLM path (was: hardcoded
+    # rejection with no emit). The prompt must embed reference content and
+    # _pending_qa_question must be set before emit.
+    tab = _make_tab(settings_files, qtbot)
+    requested = []
+    tab.qa_requested.connect(requested.append)
+
+    question = "이 프롬프트 파일들이 서로 어떻게 다른가요?"
+    tab.qa_input.setPlainText(question)
+    tab.ask_btn.click()
+
+    assert len(requested) == 1
+    prompt = requested[0]
+    assert question in prompt
+    # Grounded prompt embeds the reference document body.
+    assert "Vector retriever가 반환하는 top-k" in prompt
+    assert tab._pending_qa_question == question
+
+
+def test_ask_unknown_key_does_not_emit_hardcoded_rejection(qtbot, settings_files, monkeypatch):
+    # AC-REQ-009: the old "문서를 찾을 수 없습니다" rejection must not be reachable
+    # for unmatched questions when a reference doc is available.
+    tab = _make_tab(settings_files, qtbot)
+    js_calls = []
+    monkeypatch.setattr(tab, "_run_qa_js", lambda script: js_calls.append(script))
     requested = []
     tab.qa_requested.connect(requested.append)
 
     tab.qa_input.setPlainText("오늘 날씨 어때?")
     tab.ask_btn.click()
+
+    assert len(requested) == 1
+    assert all("문서를 찾을 수 없습니다" not in c for c in js_calls)
+
+
+def test_ask_unknown_key_missing_reference_doc_is_safe(qtbot, settings_files, monkeypatch):
+    # AC-REQ-011: with no reference document, an unmatched question must not raise
+    # and must not emit a hallucinated (grounded) prompt — safe non-LLM fallback.
+    monkeypatch.setattr(
+        rag_core, "_SETTINGS_REFERENCE_PATH",
+        str(settings_files["tmp"] / "no_such_reference.txt"),
+    )
+    tab = _make_tab(settings_files, qtbot)
+    requested = []
+    tab.qa_requested.connect(requested.append)
+
+    tab.qa_input.setPlainText("이 프롬프트 파일들이 서로 어떻게 다른가요?")
+    tab.ask_btn.click()  # must not raise
 
     assert requested == []
 

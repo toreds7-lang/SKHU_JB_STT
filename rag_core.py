@@ -99,6 +99,9 @@ def _is_trace_debug() -> bool:
 _SETTINGS_ENV_PATH = "env.txt"
 _SETTINGS_CONFIG_PATH = "config.txt"
 _SETTINGS_PROMPTS_DIR = "prompts"
+# Static Q&A grounding document (SPEC-SETTINGS-003). Hand-authored, checked in at
+# the project root; overridable so tests can inject a temp file (NFR-3).
+_SETTINGS_REFERENCE_PATH = "settings_reference.txt"
 
 # Documented env.txt parameters (SPEC §4, §2.2 F-SETTINGS-8 category mapping).
 _ENV_METADATA_CATALOG: dict[str, dict] = {
@@ -347,8 +350,68 @@ def find_config_key_in_question(question: str, config_metadata: dict) -> str | N
     return max(candidates, key=len)
 
 
-def build_settings_qa_prompt(question: str, key: str, entry: dict, current_value) -> str:
-    """SPEC §2.2 F-SETTINGS-3의 하이브리드(CONFIG_METADATA → LLM 재작성) 프롬프트."""
+# @MX:NOTE: [AUTO] settings_reference.txt loader mirrors load_system_prompt()'s
+# synchronous read; returns "" on any failure so Settings Q&A never crashes.
+def load_settings_reference() -> str:
+    """settings_reference.txt(정적 Q&A 그라운딩 문서)를 동기적으로 로드한다.
+
+    load_system_prompt()과 동일한 Path.read_text 패턴(SPEC REQ-013). 파일이 없거나
+    읽을 수 없으면 빈 문자열을 반환한다 (예외를 던지지 않음 — REQ-011 그레이스풀
+    디그레이데이션). 경로는 _SETTINGS_REFERENCE_PATH 모듈 상수로 오버라이드 가능.
+    """
+    try:
+        fp = Path(_SETTINGS_REFERENCE_PATH)
+        if fp.is_file():
+            return fp.read_text(encoding="utf-8")
+    except OSError:
+        pass
+    return ""
+
+
+# @MX:NOTE: [AUTO] section parsing is coupled to settings_reference.txt's
+# "## PARAM:"/"## FILE:" header convention — if that convention changes, this
+# extractor and the completeness tests must change together.
+def find_reference_section(reference_text: str, key_or_file: str) -> str:
+    """레퍼런스 문서에서 `## PARAM: <KEY>` 또는 `## FILE: <path>` 블록을 추출한다.
+
+    헤더의 키/경로 토큰을 대소문자 구분 정확 매칭한다. 블록은 다음 `## ` 헤더 또는
+    문서 끝까지 이어진다. 일치하는 섹션이 없으면 빈 문자열을 반환한다 (REQ-006).
+    """
+    if not reference_text or not key_or_file:
+        return ""
+
+    lines = reference_text.splitlines(keepends=True)
+    start = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("## "):
+            continue
+        header = stripped[3:].strip()  # e.g. "PARAM: VECTOR_K" / "FILE: config.txt"
+        _, _, token = header.partition(":")
+        if token.strip() == key_or_file:
+            start = i
+            break
+
+    if start is None:
+        return ""
+
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if lines[j].strip().startswith("## "):
+            end = j
+            break
+
+    return "".join(lines[start:end]).strip()
+
+
+def build_settings_qa_prompt(question: str, key: str, entry: dict, current_value,
+                             reference_section: "str | None" = None) -> str:
+    """SPEC §2.2 F-SETTINGS-3의 하이브리드(CONFIG_METADATA → LLM 재작성) 프롬프트.
+
+    reference_section이 비어 있지 않으면 권위 메타데이터 블록 뒤에 "코드 사용처
+    (레퍼런스 문서)" 블록을 덧붙인다 (SPEC-SETTINGS-003 REQ-006). 인자를 생략하거나
+    None/""이면 이 SPEC 이전과 출력이 바이트 단위로 동일하다 (REQ-007 하위 호환).
+    """
     range_str = ""
     if "min" in entry and "max" in entry:
         range_str = f"{entry['min']}-{entry['max']}"
@@ -366,11 +429,19 @@ def build_settings_qa_prompt(question: str, key: str, entry: dict, current_value
         f"Affects rebuild: {entry.get('affects_rebuild', False)}"
     )
 
+    reference_block = ""
+    if reference_section:
+        reference_block = (
+            "\n\n코드 사용처 (레퍼런스 문서):\n"
+            f"{reference_section}"
+        )
+
     return (
         "You are a settings expert for SKHU Agent RAG application.\n\n"
         f"User question: {question}\n\n"
         "Here is the authoritative parameter information:\n"
-        f"{authoritative}\n\n"
+        f"{authoritative}"
+        f"{reference_block}\n\n"
         "Rewrite this information in conversational Korean (2-3 sentences).\n"
         "Include:\n"
         "- What this parameter does\n"
@@ -380,6 +451,30 @@ def build_settings_qa_prompt(question: str, key: str, entry: dict, current_value
         "Do NOT add information not in the authoritative answer above.\n"
         "Do NOT hallucinate parameter ranges or defaults.\n"
         "Base your response ONLY on the provided metadata."
+    )
+
+
+# @MX:NOTE: [AUTO] grounded prompt for cross-cutting (no key matched) questions —
+# guardrails restrict the LLM to the reference document only (SPEC REQ-008).
+def build_settings_qa_grounded_prompt(question: str, reference_text: str) -> str:
+    """키 매칭에 실패한 횡단 질문을 레퍼런스 문서에 근거해 답하는 프롬프트.
+
+    LLM이 오직 reference_text만 근거로, 한국어로 답하도록 지시하고, 문서에 답이 없으면
+    모른다고 말하도록 가드레일을 건다 (SPEC-SETTINGS-003 REQ-008).
+    """
+    return (
+        "You are a settings expert for the SKHU Agent RAG application.\n\n"
+        f"사용자 질문: {question}\n\n"
+        "아래는 이 애플리케이션의 설정 파라미터·파일에 대한 레퍼런스 문서입니다.\n"
+        "===== 레퍼런스 문서 시작 =====\n"
+        f"{reference_text}\n"
+        "===== 레퍼런스 문서 끝 =====\n\n"
+        "규칙:\n"
+        "- 반드시 위 레퍼런스 문서에 있는 내용만 근거로 답하세요.\n"
+        "- 답변은 한국어로 자연스럽게 작성하세요.\n"
+        "- 문서에 근거가 없는 내용은 절대 지어내지 마세요 (파라미터·기본값·범위 등).\n"
+        "- 문서에서 답을 찾을 수 없으면, 모른다고 솔직히 답하고 관련 설정 파일을 확인하도록 안내하세요.\n"
+        "- 문서 밖의 외부 지식은 사용하지 마세요."
     )
 
 

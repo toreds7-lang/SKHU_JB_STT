@@ -6,6 +6,10 @@ unknown keys pass through, missing files degrade to empty sections, and the
 seven known prompt files are discovered with an existence flag.
 """
 
+import inspect
+import os
+import re
+
 import pytest
 
 import rag_core
@@ -395,3 +399,251 @@ def test_build_prompt_rewrite_request_includes_all_parts():
     assert "현재 프롬프트 텍스트" in prompt
     assert "더 간결하게 만들어줘" in prompt
     assert "prompt engineer" in prompt.lower()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SPEC-SETTINGS-003 — Settings reference document grounding
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T1: load_settings_reference()  (REQ-013, REQ-011, NFR-3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_load_settings_reference_reads_override_path(tmp_path, monkeypatch):
+    ref_file = tmp_path / "settings_reference.txt"
+    ref_file.write_text("## PARAM: VECTOR_K\n무엇: top-k 문서 수.\n", encoding="utf-8")
+    monkeypatch.setattr(rag_core, "_SETTINGS_REFERENCE_PATH", str(ref_file))
+
+    text = rag_core.load_settings_reference()
+    assert "## PARAM: VECTOR_K" in text
+    assert "top-k" in text
+
+
+def test_load_settings_reference_returns_empty_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        rag_core, "_SETTINGS_REFERENCE_PATH", str(tmp_path / "does_not_exist.txt")
+    )
+    assert rag_core.load_settings_reference() == ""
+
+
+def test_load_settings_reference_never_raises_on_unreadable(tmp_path, monkeypatch):
+    # A directory path is not a readable file — must degrade to "" not raise.
+    monkeypatch.setattr(rag_core, "_SETTINGS_REFERENCE_PATH", str(tmp_path))
+    assert rag_core.load_settings_reference() == ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T2: find_reference_section()  (REQ-006)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SAMPLE_REFERENCE = (
+    "# 헤더 서문 (섹션 아님)\n"
+    "\n"
+    "## PARAM: VECTOR_K\n"
+    "무엇: Vector retriever top-k 문서 수.\n"
+    "소비 위치: rag_core.build_rag_system().\n"
+    "\n"
+    "## PARAM: MAX_DOCS\n"
+    "무엇: 최종 컨텍스트 최대 문서 수.\n"
+    "소비 위치: rag_core.make_agent() 내부 merge_docs.\n"
+    "\n"
+    "## FILE: prompts/system_prompt.txt\n"
+    "역할: RAG 채팅 기본 시스템 프롬프트.\n"
+    "로더: rag_core.load_system_prompt().\n"
+)
+
+
+def test_find_reference_section_extracts_param_block():
+    section = rag_core.find_reference_section(_SAMPLE_REFERENCE, "VECTOR_K")
+    assert "## PARAM: VECTOR_K" in section
+    assert "Vector retriever top-k" in section
+    # Must stop at the next header — MAX_DOCS content must not bleed in.
+    assert "MAX_DOCS" not in section
+
+
+def test_find_reference_section_extracts_file_block():
+    section = rag_core.find_reference_section(_SAMPLE_REFERENCE, "prompts/system_prompt.txt")
+    assert "## FILE: prompts/system_prompt.txt" in section
+    assert "load_system_prompt" in section
+
+
+def test_find_reference_section_last_block_reaches_end():
+    section = rag_core.find_reference_section(_SAMPLE_REFERENCE, "MAX_DOCS")
+    assert "최종 컨텍스트 최대 문서 수" in section
+    assert "merge_docs" in section
+
+
+def test_find_reference_section_returns_empty_for_unknown():
+    assert rag_core.find_reference_section(_SAMPLE_REFERENCE, "NONEXISTENT_KEY") == ""
+
+
+def test_find_reference_section_returns_empty_for_empty_reference():
+    assert rag_core.find_reference_section("", "VECTOR_K") == ""
+
+
+def test_find_reference_section_is_case_sensitive_exact():
+    # Exact-token match — a substring key like "VECTOR" must not match VECTOR_K.
+    assert rag_core.find_reference_section(_SAMPLE_REFERENCE, "VECTOR") == ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T3: build_settings_qa_prompt(reference_section=...) + grounded prompt
+# (REQ-006, REQ-007, REQ-008)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_build_settings_qa_prompt_backward_compatible_without_ref(settings_files):
+    # Byte-identical output when the new arg is omitted (regression pin).
+    meta = rag_core.build_config_metadata()
+    entry = meta["config"]["VECTOR_K"]
+    without = rag_core.build_settings_qa_prompt("VECTOR_K가 뭐야?", "VECTOR_K", entry, entry["value"])
+    with_none = rag_core.build_settings_qa_prompt(
+        "VECTOR_K가 뭐야?", "VECTOR_K", entry, entry["value"], reference_section=None
+    )
+    assert without == with_none
+
+
+def test_build_settings_qa_prompt_appends_reference_section(settings_files):
+    meta = rag_core.build_config_metadata()
+    entry = meta["config"]["VECTOR_K"]
+    section = "## PARAM: VECTOR_K\n무엇: 고유한 레퍼런스 마커 XYZZY.\n"
+    prompt = rag_core.build_settings_qa_prompt(
+        "VECTOR_K가 뭐야?", "VECTOR_K", entry, entry["value"], reference_section=section
+    )
+    # Authoritative metadata still present…
+    assert "VECTOR_K" in prompt
+    assert "Current value: 7" in prompt
+    # …and the reference section text is appended.
+    assert "XYZZY" in prompt
+
+
+def test_build_settings_qa_prompt_empty_ref_stays_backward_compatible(settings_files):
+    meta = rag_core.build_config_metadata()
+    entry = meta["config"]["VECTOR_K"]
+    without = rag_core.build_settings_qa_prompt("VECTOR_K가 뭐야?", "VECTOR_K", entry, entry["value"])
+    with_empty = rag_core.build_settings_qa_prompt(
+        "VECTOR_K가 뭐야?", "VECTOR_K", entry, entry["value"], reference_section=""
+    )
+    assert without == with_empty
+
+
+def test_build_settings_qa_grounded_prompt_embeds_reference():
+    ref = "## PARAM: VECTOR_K\n무엇: 고유마커 QUUX.\n## FILE: config.txt\n역할: RAG 하이퍼파라미터.\n"
+    prompt = rag_core.build_settings_qa_grounded_prompt("이 파일들 차이가 뭐야?", ref)
+    assert "이 파일들 차이가 뭐야?" in prompt
+    assert "QUUX" in prompt
+
+
+def test_build_settings_qa_grounded_prompt_has_no_hallucination_guard():
+    ref = "## PARAM: VECTOR_K\n무엇: top-k.\n"
+    prompt = rag_core.build_settings_qa_grounded_prompt("질문", ref)
+    # Must instruct Korean-only, document-grounded answers and an "I don't know"
+    # escape hatch when the answer is not in the document.
+    assert "한국어" in prompt or "Korean" in prompt
+    lowered = prompt.lower()
+    assert "문서" in prompt
+    assert ("모른" in prompt or "찾을 수 없" in prompt or "don't" in lowered or "do not" in lowered)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T4 + T5: settings_reference.txt authored document
+# (REQ-001..REQ-005, NFR-5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REFERENCE_FILE = os.path.join(_REPO_ROOT, "settings_reference.txt")
+
+
+def _read_reference_doc() -> str:
+    with open(_REFERENCE_FILE, encoding="utf-8") as f:
+        return f.read()
+
+
+def _iter_section_bodies(text: str):
+    """Yield (header_token, [non-empty body lines]) for each ## PARAM:/## FILE: block."""
+    lines = text.splitlines()
+    current_token = None
+    body: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## ") and (":" in stripped):
+            if current_token is not None:
+                yield current_token, body
+            header = stripped[3:].strip()
+            _, _, token = header.partition(":")
+            current_token = token.strip()
+            body = []
+        elif current_token is not None and stripped:
+            body.append(stripped)
+    if current_token is not None:
+        yield current_token, body
+
+
+def test_reference_doc_exists_as_single_file():
+    # AC-REQ-001: exactly one reference file at the project root.
+    assert os.path.isfile(_REFERENCE_FILE)
+    # No split-per-item companion files.
+    assert not os.path.isdir(os.path.join(_REPO_ROOT, "settings_reference"))
+
+
+def test_reference_doc_covers_all_24_params():
+    # AC-REQ-002: 6 env + 18 config keys all appear as ## PARAM: headers.
+    text = _read_reference_doc()
+    keys = list(rag_core._ENV_METADATA_CATALOG) + list(rag_core._CONFIG_METADATA_CATALOG)
+    assert len(keys) == 24
+    for key in keys:
+        section = rag_core.find_reference_section(text, key)
+        assert section, f"missing ## PARAM: {key}"
+        assert section.startswith(f"## PARAM: {key}")
+
+
+def test_reference_doc_covers_all_9_files():
+    # AC-REQ-003: the 9 SettingsTab.CONFIG_FILES all appear as ## FILE: headers.
+    from ui.settings_tab import SettingsTab
+
+    text = _read_reference_doc()
+    assert len(SettingsTab.CONFIG_FILES) == 9
+    for rel_path in SettingsTab.CONFIG_FILES:
+        section = rag_core.find_reference_section(text, rel_path)
+        assert section, f"missing ## FILE: {rel_path}"
+        assert section.startswith(f"## FILE: {rel_path}")
+
+
+def test_reference_doc_cited_symbols_exist_in_source():
+    # AC-REQ-004: spot-checked consumer symbols must be real functions.
+    import agentic_rag
+
+    text = _read_reference_doc()
+    for symbol in ("build_rag_system", "load_system_prompt",
+                   "load_force_prompt", "load_summary_prompt"):
+        assert symbol in text, f"expected {symbol} to be cited"
+        assert callable(getattr(rag_core, symbol))
+    for symbol in ("load_agentic_planner_prompt", "load_agentic_synthesis_prompt"):
+        assert callable(getattr(agentic_rag, symbol))
+
+
+def test_reference_doc_has_no_code_fences_or_indented_code():
+    # AC-REQ-005: no ``` fences and no 4-space-indented code blocks.
+    text = _read_reference_doc()
+    assert "```" not in text
+    for line in text.splitlines():
+        # A line that is indented by >=4 spaces and non-empty would be a code block.
+        if line and not line.strip() == "":
+            assert not re.match(r"^ {4,}\S", line), f"indented code line: {line!r}"
+
+
+def test_reference_doc_entries_are_prose_3_to_8_lines():
+    # AC-REQ-005: each entry's prose body is between 3 and 8 lines.
+    text = _read_reference_doc()
+    bodies = list(_iter_section_bodies(text))
+    assert bodies, "no sections parsed"
+    for token, body in bodies:
+        assert 3 <= len(body) <= 8, f"{token}: {len(body)} body lines (want 3-8)"
+
+
+def test_reference_doc_openai_key_never_contains_real_key():
+    # NFR-5: OPENAI_API_KEY entry explains what it is, never embeds a key value.
+    text = _read_reference_doc()
+    section = rag_core.find_reference_section(text, "OPENAI_API_KEY")
+    assert section
+    # No sk- prefixed secret-looking token in the whole document.
+    assert not re.search(r"sk-[A-Za-z0-9]{16,}", text)

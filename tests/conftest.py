@@ -64,13 +64,32 @@ def settings_files(tmp_path, monkeypatch):
     (prompts_dir / "system_prompt.txt").write_text("system prompt body", encoding="utf-8")
     (prompts_dir / "force_prompt.txt").write_text("force prompt body", encoding="utf-8")
 
+    # SPEC-SETTINGS-003: a temp settings_reference.txt so Q&A grounding tests are
+    # deterministic and isolated from the real root document. Contains the keys /
+    # files those tests probe (VECTOR_K param, config.txt file entry).
+    reference_file = tmp_path / "settings_reference.txt"
+    reference_file.write_text(
+        "## PARAM: VECTOR_K\n"
+        "무엇: Vector retriever가 반환하는 top-k 문서 수.\n"
+        "소비 위치: rag_core.build_rag_system().\n"
+        "흐름: 앙상블 후보 문서 폭을 결정.\n"
+        "\n"
+        "## FILE: config.txt\n"
+        "역할: RAG 하이퍼파라미터 파일.\n"
+        "로더: rag_core._load_config() → RAG_CONFIG.\n"
+        "흐름: 검색·병합 파라미터를 공급.\n",
+        encoding="utf-8",
+    )
+
     monkeypatch.setattr(rag_core, "_SETTINGS_ENV_PATH", str(env_file))
     monkeypatch.setattr(rag_core, "_SETTINGS_CONFIG_PATH", str(config_file))
     monkeypatch.setattr(rag_core, "_SETTINGS_PROMPTS_DIR", str(prompts_dir))
+    monkeypatch.setattr(rag_core, "_SETTINGS_REFERENCE_PATH", str(reference_file))
 
     return {
         "env": env_file,
         "config": config_file,
         "prompts_dir": prompts_dir,
+        "reference": reference_file,
         "tmp": tmp_path,
     }

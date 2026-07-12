@@ -1,0 +1,228 @@
+# SKHU Agent 설정 레퍼런스 문서 (settings_reference.txt)
+#
+# 설정 탭 Q&A 그라운딩용 정적 근거 문서입니다 (SPEC-SETTINGS-003). 손으로 작성하며
+# 소스가 바뀌면 수동으로 갱신합니다. env.txt 6개 + config.txt 18개 파라미터와 설정 파일
+# 9개를 다룹니다. 각 항목은 "무엇 / 소비 위치(파일명+함수) / high-level 흐름"을 기술합니다.
+# 코드 전문을 붙여넣지 않고, 소스 위치는 파일명과 함수/클래스 이름으로만 인용합니다.
+
+## PARAM: OPENAI_API_KEY
+무엇: OpenAI 임베딩과 LLM 호출에 사용하는 API 키입니다 (실제 키 값은 여기 담지 않습니다).
+소비 위치: ui/config_panel.py가 os.getenv("OPENAI_API_KEY")로 읽어 입력란을 채우고, 그 값을
+rag_core.build_rag_system()의 openai_api_key 인자와 make_agent()의 llm_api_key로 전달합니다.
+흐름: build_rag_system()이 OpenAIEmbeddings를, make_agent()가 ChatOpenAI를 이 키로 생성합니다.
+기본/제약: 필수 값이며 없으면 임베딩·LLM 호출이 실패합니다. UI에서는 마스킹되어 표시됩니다.
+
+## PARAM: LLM_MODEL
+무엇: 답변 생성에 사용할 LLM 모델 이름입니다 (예: gpt-4o-mini, gpt-4o).
+소비 위치: ui/config_panel.py가 os.getenv("LLM_MODEL")로 읽어 모델 입력란 기본값으로 쓰고,
+app.py도 동일 변수를 참조합니다. 선택된 모델명은 rag_core.make_agent()의 llm_model로 전달됩니다.
+흐름: make_agent()가 이 모델명으로 ChatOpenAI 클라이언트를 만들어 스트리밍 응답을 생성합니다.
+기본/제약: 미설정 시 gpt-4o-mini를 사용합니다.
+
+## PARAM: LLM_BASE_URL
+무엇: LLM API 엔드포인트 주소입니다. 비워두면 OpenAI, 로컬 서버(Ollama 등) 사용 시 지정합니다.
+소비 위치: ui/config_panel.py가 os.getenv("LLM_BASE_URL")로 읽어 URL 입력란을 채웁니다.
+흐름: 이 값은 rag_core.make_agent()의 llm_base_url 인자로 전달되어 ChatOpenAI의 base_url이 됩니다.
+기본/제약: 기본은 빈 값(OpenAI 기본 엔드포인트)입니다.
+
+## PARAM: EMBEDDING_MODEL
+무엇: 벡터 임베딩 생성에 사용할 임베딩 모델 이름입니다.
+소비 위치: ui/config_panel.py가 os.getenv("EMBEDDING_MODEL")로 읽어 입력란 기본값으로 씁니다.
+흐름: 선택된 모델명은 rag_core.build_rag_system()의 embedding_model 인자로 전달되어
+OpenAIEmbeddings 생성에 쓰이고, FAISS 인덱스를 만드는 임베딩 벡터를 결정합니다.
+기본/제약: 미설정 시 text-embedding-ada-002를 사용합니다.
+
+## PARAM: EMBEDDING_BASE_URL
+무엇: 임베딩 API 엔드포인트 주소입니다. 비워두면 LLM_BASE_URL/OpenAI 기본값을 따릅니다.
+소비 위치: ui/config_panel.py가 os.getenv("EMBEDDING_BASE_URL")로 읽어 입력란을 채웁니다.
+흐름: rag_core.build_rag_system()의 embedding_base_url 인자로 전달되며, 값이 있으면
+OpenAIEmbeddings의 base_url로 설정됩니다.
+기본/제약: 기본은 빈 값입니다.
+
+## PARAM: FORCE_WORKERS
+무엇: Force Mode(전수 검색)에서 청크를 병렬로 판단하는 워커 수입니다.
+소비 위치: ui/config_panel.py가 os.getenv("FORCE_WORKERS", "3")로 읽어 force_workers_spin
+스핀박스의 초기값으로 씁니다. 실제 병렬 처리는 workers/llm_worker.py의 ForceWorker가 수행합니다.
+흐름: 스핀박스 값이 ForceWorker의 ThreadPoolExecutor(max_workers=N)로 전달됩니다.
+기본/제약: 기본 3, 범위 1-10.
+
+## PARAM: VECTOR_K
+무엇: Vector(FAISS) retriever가 반환하는 top-k 문서 수입니다.
+소비 위치: rag_core.build_rag_system()이 FAISS vector_store.as_retriever(search_kwargs)의 k로
+사용합니다. 이 vector_retriever는 이후 EnsembleRetriever의 한 축이 됩니다.
+흐름: 값이 클수록 의미론적 검색 후보가 많아져 merge_docs 병합 후보 폭이 넓어집니다.
+기본/제약: 기본 5, 범위 1-20. 변경 시 RAG 인덱스 재구축이 필요합니다.
+
+## PARAM: BM25_K
+무엇: BM25 키워드 retriever가 반환하는 top-k 문서 수입니다.
+소비 위치: rag_core.build_rag_system()이 BM25Retriever를 만든 뒤 bm25_retriever.k로 지정합니다.
+흐름: 이 retriever는 EnsembleRetriever에서 Vector와 함께 결합되어 후보 문서를 제공합니다.
+기본/제약: 기본 5, 범위 1-20. 변경 시 재구축이 필요합니다.
+
+## PARAM: GRAPH_K
+무엇: Graph RAG가 반환하는 top-k 문서 수입니다.
+소비 위치: rag_core.graph_search()의 top_k 파라미터로 쓰이며, make_agent()의 graph_retrieve
+노드가 graph_search()를 호출해 상위 top_k 노드를 문서로 되돌립니다.
+흐름: 다중 홉 점수 전파 후 점수 상위 top_k 셀만 최종 후보로 반환됩니다.
+기본/제약: 기본 5, 범위 1-20. 변경 시 재구축이 필요합니다.
+
+## PARAM: GRAPH_HOPS
+무엇: Graph RAG의 multi-hop 점수 전파 깊이입니다.
+소비 위치: rag_core.graph_search()의 hops 파라미터로, 함수 내부 전파 루프의 반복 횟수입니다.
+흐름: seed 노드에서 시작해 hops회만큼 이웃 셀로 점수를 전파하며 관련 셀 범위를 넓힙니다.
+기본/제약: 기본 2, 범위 1-5. 변경 시 재구축이 필요합니다.
+
+## PARAM: SEQ_DECAY
+무엇: 인접 셀(sequential) 엣지를 따라 점수를 전파할 때 곱하는 감쇠 계수입니다.
+소비 위치: rag_core.graph_search()의 seq_decay 파라미터로, 전파 루프에서 sequential 엣지의
+가중치로 사용됩니다.
+흐름: 값이 작을수록 인접 셀로의 점수 전파가 빠르게 약해져 이웃 확산이 제한됩니다.
+기본/제약: 기본 0.5, 범위 0.0-1.0. 변경 시 재구축이 필요합니다.
+
+## PARAM: VAR_DECAY
+무엇: 변수 공유(shared_var) 엣지를 따라 점수를 전파할 때 곱하는 감쇠 계수입니다.
+소비 위치: rag_core.graph_search()의 var_decay 파라미터로, 전파 루프에서 shared_var 엣지의
+가중치로 사용됩니다.
+흐름: 같은 변수를 공유하는 셀로의 점수 전파 강도를 조절합니다(보통 sequential보다 강함).
+기본/제약: 기본 0.8, 범위 0.0-1.0. 변경 시 재구축이 필요합니다.
+
+## PARAM: KEYWORD_BOOST
+무엇: Graph RAG에서 질문 키워드가 셀 내용과 겹칠 때 부여하는 보조 점수 부스트 계수입니다.
+소비 위치: rag_core.graph_search()의 키워드 보조 점수 단계에서 쓰입니다(질문 토큰과 셀 텍스트의
+겹침 비율에 곱해지는 계수).
+흐름: 벡터 seed 외에 키워드가 일치하는 셀에도 시작 점수를 주어 검색 재현율을 보완합니다.
+기본/제약: 기본 0.4, 범위 0.0-1.0.
+
+## PARAM: SEED_COUNT
+무엇: Graph RAG 전파의 시작점이 되는 vector seed 문서 수입니다.
+소비 위치: rag_core.graph_search()의 vector seed 선정 단계에서 상위 seed 문서를 고를 때
+기준이 되는 개수입니다.
+흐름: 선정된 seed 노드에 초기 점수 1.0을 주고 여기서부터 multi-hop 전파를 시작합니다.
+기본/제약: 기본 3, 범위 1-10.
+
+## PARAM: VECTOR_WEIGHT
+무엇: 앙상블 검색에서 Vector retriever 결과에 부여하는 가중치입니다.
+소비 위치: rag_core.build_rag_system()이 EnsembleRetriever의 weights 리스트를 구성할 때
+Vector 축의 값으로 사용됩니다.
+흐름: BM25_WEIGHT와 합이 1.0이 되도록 두어 두 retriever 순위를 가중 결합합니다.
+기본/제약: 기본 0.6, 범위 0.0-1.0. 변경 시 재구축이 필요합니다.
+
+## PARAM: BM25_WEIGHT
+무엇: 앙상블 검색에서 BM25 retriever 결과에 부여하는 가중치입니다.
+소비 위치: rag_core.build_rag_system()이 EnsembleRetriever의 weights 리스트에서 BM25 축의
+값으로 사용합니다.
+흐름: VECTOR_WEIGHT와 합이 1.0이 되며, 키워드 검색 비중을 높이면 이 값을 키웁니다.
+기본/제약: 기본 0.4, 범위 0.0-1.0. 변경 시 재구축이 필요합니다.
+
+## PARAM: MAX_DOCS
+무엇: 최종 LLM 컨텍스트에 포함할 최대 병합 문서 수입니다.
+소비 위치: rag_core.make_agent() 내부의 merge_docs 노드가 RAG_CONFIG.get("MAX_DOCS")로 읽습니다.
+흐름: Vector/BM25/Graph 결과를 중복 제거해 병합한 뒤 상위 MAX_DOCS개만 잘라 컨텍스트 문자열을
+만들고, 이는 곧 LLM 프롬프트 근거의 크기를 좌우합니다.
+기본/제약: 기본 10, 범위 1-50.
+
+## PARAM: LLM_TEMPERATURE
+무엇: LLM 응답 생성의 temperature(낮을수록 결정적)입니다.
+소비 위치: config.txt에 문서화된 파라미터로, rag_core.make_agent()가 ChatOpenAI를 생성하는
+지점의 temperature 설정에 해당합니다.
+흐름: 값이 낮으면 일관되고 보수적인 답변, 높으면 더 다양한 표현의 답변이 나옵니다.
+기본/제약: 기본 0.2, 범위 0.0-2.0.
+
+## PARAM: TRACE_DEBUG
+무엇: 쿼리별 retriever 검색 결과를 파일로 남길지 여부입니다.
+소비 위치: rag_core._is_trace_debug()가 RAG_CONFIG에서 읽어 판단하고, merge_docs 병합 후
+rag_core._write_trace_log()가 활성화 시 로그 파일을 씁니다.
+흐름: true이면 Vector/BM25/Graph/Merged 4단계 결과가 trace_logs/ 아래 타임스탬프 파일로 저장됩니다.
+기본/제약: 기본 false(불리언).
+
+## PARAM: AGENTIC_MAX_ITERS
+무엇: Agentic Mode의 검색→평가→보강 루프 최대 반복 횟수입니다.
+소비 위치: agentic_rag.py가 RAG_CONFIG에서 읽어 모듈 상수 MAX_ITERS로 두고, run_agentic_rag()
+루프의 상한으로 사용합니다.
+흐름: 근거가 충분해지거나 이 횟수에 도달할 때까지 계획·검색·충분성 평가를 반복합니다.
+기본/제약: 기본 3, 범위 1-10.
+
+## PARAM: AGENTIC_FANOUT_K
+무엇: Agentic Mode에서 검색어 하나당 가져오는 top-k 문서 수입니다.
+소비 위치: agentic_rag.py가 RAG_CONFIG에서 읽어 모듈 상수 FANOUT_TOP_K로 두고,
+search_fanout()이 각 검색어에 대해 top-k 검색할 때 사용합니다.
+흐름: 검색어별로 top-k 근거를 병렬 수집해 누적 근거 풀을 채웁니다.
+기본/제약: 기본 5, 범위 1-20.
+
+## PARAM: AGENTIC_MAX_SNIPPETS
+무엇: Agentic Mode가 누적할 수 있는 근거 스니펫 상한입니다.
+소비 위치: agentic_rag.py가 RAG_CONFIG에서 읽어 모듈 상수 MAX_SNIPPETS로 두고, 반복 검색으로
+모은 근거 수를 이 값으로 제한합니다.
+흐름: 상한을 두어 합성 단계 프롬프트가 지나치게 커지는 것을 막습니다.
+기본/제약: 기본 24, 범위 1-100.
+
+## PARAM: AGENTIC_MAX_QUERIES
+무엇: Agentic Mode 한 패스에서 사용할 검색어 수의 상한입니다.
+소비 위치: agentic_rag.py가 RAG_CONFIG에서 읽어 모듈 상수 MAX_QUERIES_PER_PASS로 둡니다.
+흐름: 계획 단계가 만든 검색어가 많아도 한 패스에서 이 수만큼만 팬아웃 검색합니다.
+기본/제약: 기본 8, 범위 1-20.
+
+## PARAM: STT_MODEL
+무엇: 음성 인식(Whisper STT) 모델 크기입니다.
+소비 위치: rag_core._CONFIG_METADATA_CATALOG에 문서화된 설정 값으로 설정 탭에 노출되며, 실제
+STT 모델 로딩은 workers/stt_subprocess.py가 WhisperModel을 초기화할 때 수행합니다.
+흐름: STT 서브프로세스가 로컬 faster-whisper 모델을 로드해 녹음 오디오를 텍스트로 변환합니다.
+기본/제약: 기본 small, 선택지 small/medium.
+
+## FILE: env.txt
+역할: API 키와 모델 설정 등 환경 변수를 KEY=VALUE 형식으로 담는 파일입니다.
+로더: env_loader.py의 load_env_txt()가 파일을 파싱해 os.environ.setdefault로 반영합니다
+(rag_core.py에도 동일한 내부 로더가 있습니다). main.py가 시작 시 로드를 트리거합니다.
+흐름: 여기서 로드된 OPENAI_API_KEY·LLM_MODEL 등을 ui/config_panel.py가 os.getenv로 읽어
+사용합니다. 설정 탭에서는 env.txt의 6개 알려진 키를 편집·저장할 수 있습니다.
+
+## FILE: config.txt
+역할: RAG 파이프라인 하이퍼파라미터를 KEY=VALUE 형식으로 담는 파일입니다.
+로더: rag_core.py의 _load_config()가 시작 시 한 번 읽어 RAG_CONFIG 딕셔너리로 만듭니다.
+흐름: build_rag_system()·graph_search()·make_agent()의 merge_docs와 agentic_rag.py가
+RAG_CONFIG 값을 참조해 검색 top-k, 그래프 전파, 병합 문서 수 등을 결정합니다.
+기본/제약: 파일이 없으면 모든 파라미터가 내장 기본값을 사용합니다.
+
+## FILE: prompts/system_prompt.txt
+역할: 일반 RAG 채팅의 기본 시스템 프롬프트입니다.
+로더: rag_core.load_system_prompt()가 읽으며, 파일이 없으면 내장 _DEFAULT_SYSTEM_PROMPT를
+사용합니다.
+흐름: make_agent()가 에이전트를 만들 때 시스템 메시지로 주입되어 답변 어조와 규칙을 정합니다.
+기본/제약: 선택 파일이며 없어도 한국어 기본 프롬프트로 동작합니다.
+
+## FILE: prompts/force_prompt.txt
+역할: Force Mode에서 청크의 관련성을 판단하는 시스템 프롬프트입니다.
+로더: rag_core.load_force_prompt()가 읽으며, 파일이 없으면 내장 기본 프롬프트를 사용합니다.
+흐름: ForceWorker의 각 병렬 sub-worker가 이 프롬프트로 청크가 질문과 관련 있는지 LLM에 묻습니다.
+기본/제약: 선택 파일이며 system_prompt.txt와 독립적으로 관리됩니다.
+
+## FILE: prompts/agentic_planner_prompt.txt
+역할: Agentic Mode의 계획/질의 재작성 프롬프트입니다.
+로더: agentic_rag.py의 load_agentic_planner_prompt()가 읽으며, 없으면 내장 기본값을 씁니다.
+흐름: plan() 단계가 이 프롬프트로 질문을 하위 질문·검색어로 분해합니다.
+기본/제약: 선택 파일이며 없어도 기본 계획 프롬프트로 동작합니다.
+
+## FILE: prompts/agentic_sufficiency_prompt.txt
+역할: Agentic Mode의 충분성 게이트 프롬프트입니다.
+로더: agentic_rag.py의 load_agentic_sufficiency_prompt()가 읽으며, 없으면 내장 기본값을 씁니다.
+흐름: assess_sufficiency() 단계가 이 프롬프트로 근거가 충분한지, 부족하면 후속 검색어가 무엇인지
+판단합니다.
+기본/제약: 선택 파일이며 없어도 기본 프롬프트로 동작합니다.
+
+## FILE: prompts/agentic_synthesis_prompt.txt
+역할: Agentic Mode의 최종 답변 합성 프롬프트입니다.
+로더: agentic_rag.py의 load_agentic_synthesis_prompt()가 읽으며, 없으면 내장 기본값을 씁니다.
+흐름: synthesize() 단계가 이 프롬프트로 누적 근거를 바탕으로 스트리밍 답변을 생성합니다.
+기본/제약: 선택 파일이며 없어도 기본 프롬프트로 동작합니다.
+
+## FILE: prompts/notebook_chat_prompt.txt
+역할: 노트북 셀 채팅(선택 셀 기반 Q&A)의 시스템 프롬프트입니다.
+로더: rag_core.load_notebook_chat_prompt()가 읽으며, 파일이 없으면 내장 기본 프롬프트를 씁니다.
+흐름: NotebookChatWorker가 선택된 셀 내용과 노트북 요약을 이 프롬프트와 함께 LLM에 보냅니다(RAG 미사용).
+기본/제약: 선택 파일이며 없어도 기본 프롬프트로 동작합니다.
+
+## FILE: prompts/summary_prompt.txt
+역할: 노트북 요약 생성의 시스템 프롬프트입니다.
+로더: rag_core.load_summary_prompt()가 읽으며, 파일이 없으면 내장 기본 프롬프트를 사용합니다.
+흐름: SummaryWorker가 체크된 노트북 셀 내용을 이 프롬프트로 LLM에 보내 한국어 요약을 만듭니다.
+기본/제약: 선택 파일이며 없어도 기본 프롬프트로 동작합니다.

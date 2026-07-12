@@ -916,21 +916,43 @@ class SettingsTab(QWidget):
         self._run_qa_js(f"appendUserMessage({json.dumps(question)})")
         self._run_qa_js("startAiMessage()")
 
-        from rag_core import find_config_key_in_question, build_settings_qa_prompt
+        from rag_core import (
+            find_config_key_in_question,
+            build_settings_qa_prompt,
+            build_settings_qa_grounded_prompt,
+            load_settings_reference,
+            find_reference_section,
+        )
         key = find_config_key_in_question(question, self._config_metadata)
+
+        # 레퍼런스 문서는 매칭/비매칭 양쪽에서 근거로 쓰인다 (SPEC-SETTINGS-003).
+        # 없거나 못 읽으면 빈 문자열 — 예외 없이 폴백 (REQ-011).
+        reference_text = load_settings_reference()
+
         if key is None:
-            answer = (
-                f"'{question}'에 대한 문서를 찾을 수 없습니다. 사용자 정의 또는 "
-                "실험적 설정일 수 있습니다. 설정 파일이나 문서를 확인해 주세요."
-            )
-            self._run_qa_js(f"streamingBuffer = {json.dumps(answer)}; finishAiMessage();")
-            self._append_qa_history(question, answer)
+            # 비매칭: 하드코딩 거부 대신 레퍼런스 문서 기반 그라운딩 LLM 경로로 라우팅.
+            if reference_text:
+                prompt = build_settings_qa_grounded_prompt(question, reference_text)
+                self._pending_qa_question = question
+                self.qa_requested.emit(prompt)
+            else:
+                # 레퍼런스 문서 부재 시 안전 폴백 (LLM 미호출, 비크래시).
+                answer = (
+                    "현재 참고할 수 있는 설정 레퍼런스 문서가 없어 이 질문에 답변하기 "
+                    "어렵습니다. 관련 설정 파일을 직접 확인해 주세요."
+                )
+                self._run_qa_js(f"streamingBuffer = {json.dumps(answer)}; finishAiMessage();")
+                self._append_qa_history(question, answer)
             return
 
         entry = self._config_metadata.get("config", {}).get(key) \
             or self._config_metadata.get("env", {}).get(key)
         current_value = entry.get("value") if entry else None
-        prompt = build_settings_qa_prompt(question, key, entry or {}, current_value)
+        reference_section = find_reference_section(reference_text, key) if reference_text else ""
+        prompt = build_settings_qa_prompt(
+            question, key, entry or {}, current_value,
+            reference_section=reference_section or None,
+        )
         self._pending_qa_question = question
         self.qa_requested.emit(prompt)
 
