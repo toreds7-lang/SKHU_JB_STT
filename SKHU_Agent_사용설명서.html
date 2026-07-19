@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SKHU Agent — 사용설명서</title>
+<style>
+  :root{
+    --bg:#0d1117; --bg-alt:#161b22; --bg-soft:#1c2128; --panel:#10151c;
+    --txt:#e6edf3; --txt-dim:#9aa7b4; --txt-faint:#6e7b8a;
+    --line:#26303b; --accent:#56d4dd; --accent-2:#3fb950;
+    --code-bg:#0a0e14; --chip:#1f2630;
+    --g1:#56d4dd; --g2:#3fb950; --g3:#d2a8ff; --g4:#f0883e; --g5:#ff7b72; --g6:#58a6ff; --g7:#e3b341;
+    --kw:#e05c00;
+    --radius:10px; --maxw:880px;
+  }
+  html[data-theme="light"]{
+    --bg:#ffffff; --bg-alt:#f6f8fa; --bg-soft:#eef1f5; --panel:#ffffff;
+    --txt:#1f2328; --txt-dim:#57606a; --txt-faint:#8c959f;
+    --line:#d0d7de; --accent:#0969da; --accent-2:#1a7f37;
+    --code-bg:#f6f8fa; --chip:#eaeef2; --kw:#cf6f00;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Pretendard","Malgun Gothic",Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--txt);line-height:1.7;font-size:16px;-webkit-font-smoothing:antialiased}
+
+  /* ---------- layout ---------- */
+  .sidebar{position:fixed;top:0;left:0;width:290px;height:100vh;overflow-y:auto;
+    background:var(--panel);border-right:1px solid var(--line);padding:18px 14px 60px;z-index:40}
+  .main{margin-left:290px}
+  .topbar{position:sticky;top:0;z-index:30;background:color-mix(in srgb,var(--bg) 86%,transparent);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding:12px 28px;
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .content{max-width:var(--maxw);margin:0 auto;padding:34px 28px 120px}
+
+  /* ---------- sidebar ---------- */
+  .brand{font-weight:700;font-size:15px;letter-spacing:.2px;margin:2px 4px 4px;display:flex;align-items:center;gap:8px}
+  .brand .dot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,var(--g1),var(--g3));flex:none}
+  .brand-sub{font-size:11.5px;color:var(--txt-faint);margin:0 4px 14px;line-height:1.4}
+  .filter{width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);
+    background:var(--bg-alt);color:var(--txt);font-size:13px;margin-bottom:12px;outline:none}
+  .filter:focus{border-color:var(--accent)}
+  .nav a{display:flex;align-items:center;gap:9px;padding:6px 9px;border-radius:7px;color:var(--txt-dim);
+    text-decoration:none;font-size:13px;line-height:1.3;transition:background .12s,color .12s}
+  .nav a .sdot{width:7px;height:7px;border-radius:2px;flex:none}
+  .nav a .sid{color:var(--txt-faint);font-variant-numeric:tabular-nums;font-size:11.5px;width:22px;flex:none}
+  .nav a:hover{background:var(--bg-soft);color:var(--txt)}
+  .nav a.active{background:var(--bg-soft);color:var(--txt);font-weight:600;box-shadow:inset 2px 0 0 var(--accent)}
+  .nav a.intro-link{margin-bottom:6px;color:var(--txt)}
+  .nav .grouplbl{font-size:10.5px;text-transform:uppercase;letter-spacing:.7px;color:var(--txt-faint);
+    margin:14px 9px 5px;font-weight:700}
+
+  /* ---------- topbar ---------- */
+  .topbar h1{font-size:14px;margin:0;font-weight:600;color:var(--txt-dim);white-space:nowrap}
+  .topbar .ver{font-size:11.5px;color:var(--txt-faint);flex:1;min-width:120px}
+  .iconbtn{margin-left:auto;border:1px solid var(--line);background:var(--bg-alt);color:var(--txt-dim);
+    width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:15px;line-height:1}
+  .iconbtn:hover{color:var(--txt);border-color:var(--accent)}
+  .menubtn{display:none}
+
+  /* ---------- content ---------- */
+  .hero h2{font-size:28px;line-height:1.25;margin:0 0 10px;letter-spacing:-.3px}
+  .hero .lede{color:var(--txt-dim);font-size:16.5px;margin:0 0 22px}
+  .module{padding-top:34px;margin-top:30px;border-top:1px solid var(--line);scroll-margin-top:74px}
+  .module:first-of-type{border-top:0}
+  #intro{scroll-margin-top:74px}
+  .mod-head{display:flex;align-items:baseline;gap:14px;margin-bottom:8px}
+  .mod-num{font-weight:800;font-size:13px;font-variant-numeric:tabular-nums;color:#08111a;
+    background:var(--accent);padding:3px 9px;border-radius:7px;flex:none;letter-spacing:.5px}
+  .module h2{font-size:22px;margin:0;letter-spacing:-.2px}
+  .module h3{font-size:15.5px;margin:20px 0 8px;color:var(--txt)}
+  .tagline{color:var(--txt-dim);font-style:italic;margin:3px 0 0;font-size:14px}
+  .badges{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 18px}
+  .badge{font-size:11.5px;padding:3px 10px;border-radius:20px;border:1px solid var(--line);
+    background:var(--bg-alt);color:var(--txt-dim);font-weight:600}
+
+  p{margin:0 0 14px;font-size:15px}
+  ul,ol{margin:0 0 14px;padding-left:22px}
+  li{margin-bottom:6px;font-size:15px}
+  strong{color:var(--txt)}
+  .kw{color:var(--kw);font-weight:700}
+
+  .callout{border-left:3px solid var(--accent);background:var(--bg-alt);padding:11px 15px;border-radius:0 8px 8px 0;
+    margin:0 0 16px;font-size:14px;color:var(--txt-dim)}
+  .callout.warn{border-left-color:var(--g4)}
+  .callout b,.callout strong{color:var(--txt)}
+
+  /* code */
+  .codeblock{margin:16px 0;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--code-bg)}
+  .code-cap{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--txt-faint);
+    padding:8px 14px;border-bottom:1px solid var(--line);background:var(--bg-alt);font-weight:700}
+  pre{margin:0;padding:15px 16px;overflow-x:auto;font-size:13px;line-height:1.55}
+  code{font-family:"SFMono-Regular",ui-monospace,Consolas,"Liberation Mono",monospace}
+  pre code{color:var(--txt)}
+  p code,li code,td code,h3 code{background:var(--chip);padding:1.5px 6px;border-radius:5px;font-size:13px;color:var(--txt)}
+
+  table{border-collapse:collapse;width:100%;margin:0 0 18px;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--bg-alt);font-weight:600;font-size:13px}
+
+  .next{font-size:14px;background:var(--bg-alt);border:1px solid var(--line);border-radius:8px;
+    padding:11px 15px;color:var(--txt-dim);margin-top:18px}
+  .next a{color:var(--accent);text-decoration:none;font-weight:600}
+  .next a:hover{text-decoration:underline}
+
+  .g1{color:var(--g1)} .g2{color:var(--g2)} .g3{color:var(--g3)}
+  .g4{color:var(--g4)} .g5{color:var(--g5)} .g6{color:var(--g6)} .g7{color:var(--g7)}
+  .bg1{background:var(--g1)}.bg2{background:var(--g2)}.bg3{background:var(--g3)}
+  .bg4{background:var(--g4)}.bg5{background:var(--g5)}.bg6{background:var(--g6)}.bg7{background:var(--g7)}
+
+  .roadmap{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:20px 0 8px}
+  .stagecard{border:1px solid var(--line);border-radius:var(--radius);padding:14px 15px;background:var(--bg-alt)}
+  .stagecard h4{margin:0 0 8px;font-size:14px;display:flex;align-items:center;gap:8px}
+  .stagecard h4 .sdot{width:9px;height:9px;border-radius:3px}
+  .stagecard ul{margin:0;padding-left:0;list-style:none}
+  .stagecard li{font-size:12.5px;color:var(--txt-dim);margin-bottom:3px}
+  .scrim{display:none}
+
+  @media(max-width:920px){
+    .sidebar{transform:translateX(-100%);transition:transform .22s;width:280px}
+    .sidebar.open{transform:none}
+    .main{margin-left:0}
+    .menubtn{display:inline-flex;align-items:center;justify-content:center;margin-left:0}
+    .scrim.show{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:35}
+    .content{padding:24px 18px 100px}
+    .hero h2{font-size:22px}
+  }
+</style>
+</head>
+<body>
+
+<aside class="sidebar" id="sidebar">
+  <div class="brand"><span class="dot"></span>SKHU Agent</div>
+  <div class="brand-sub">사용설명서 — PyQt6 데스크탑 앱 (V1.0)</div>
+  <input class="filter" id="filter" type="text" placeholder="섹션 검색…" autocomplete="off">
+  <nav class="nav" id="nav">
+    <a href="#intro" class="intro-link" data-target="intro"><span class="sid">▸</span><span>개요</span></a>
+
+    <div class="grouplbl">⚙️ 설정</div>
+    <a href="#s1" data-target="s1" data-search="1 시작 전 준비 설정"><span class="sdot bg2"></span><span class="sid">1</span><span>시작 전 준비</span></a>
+    <a href="#s2" data-target="s2" data-search="2 env.txt 환경변수 설정"><span class="sdot bg2"></span><span class="sid">2</span><span>env.txt 환경변수</span></a>
+    <a href="#s3" data-target="s3" data-search="3 설정 패널 디렉토리"><span class="sdot bg2"></span><span class="sid">3</span><span>설정 패널 — 디렉토리</span></a>
+    <a href="#s4" data-target="s4" data-search="4 설정 패널 LLM 검색 Force"><span class="sdot bg2"></span><span class="sid">4</span><span>설정 패널 — LLM/검색/Force</span></a>
+
+    <div class="grouplbl">⌨️ 단축키</div>
+    <a href="#s5" data-target="s5" data-search="5 단축키 전역 입력창"><span class="sdot bg3"></span><span class="sid">5</span><span>단축키 — 전역·입력창</span></a>
+    <a href="#s6" data-target="s6" data-search="6 단축키 노트북 뷰어 셀 분석"><span class="sdot bg3"></span><span class="sid">6</span><span>단축키 — 노트북 셀 분석</span></a>
+
+    <div class="grouplbl">📓 노트북 뷰어</div>
+    <a href="#s7" data-target="s7" data-search="7 노트북 뷰어 아웃라인"><span class="sdot bg4"></span><span class="sid">7</span><span>아웃라인</span></a>
+    <a href="#s8" data-target="s8" data-search="8 선택 모드"><span class="sdot bg4"></span><span class="sid">8</span><span>선택 모드</span></a>
+    <a href="#s9" data-target="s9" data-search="9 노트북 뷰어 요약 보기"><span class="sdot bg4"></span><span class="sid">9</span><span>요약 보기</span></a>
+    <a href="#s10" data-target="s10" data-search="10 셀 보기 채팅 요약 모드"><span class="sdot bg4"></span><span class="sid">10</span><span>셀 보기+채팅 — 요약 모드</span></a>
+    <a href="#s11" data-target="s11" data-search="11 셀 보기 채팅 전체 모드"><span class="sdot bg4"></span><span class="sid">11</span><span>셀 보기+채팅 — 전체 모드</span></a>
+    <a href="#s12" data-target="s12" data-search="12 셀 보기 채팅 실행 예측"><span class="sdot bg4"></span><span class="sid">12</span><span>셀 보기+채팅 — 실행 예측</span></a>
+
+    <div class="grouplbl">💬 채팅 모드</div>
+    <a href="#s13" data-target="s13" data-search="13 채팅 탭 기본 사용"><span class="sdot bg5"></span><span class="sid">13</span><span>채팅 탭 — 기본 사용</span></a>
+    <a href="#s14" data-target="s14" data-search="14 채팅 탭 force mode"><span class="sdot bg5"></span><span class="sid">14</span><span>채팅 탭 — Force Mode</span></a>
+    <a href="#s15" data-target="s15" data-search="15 채팅 탭 agentic mode"><span class="sdot bg5"></span><span class="sid">15</span><span>채팅 탭 — Agentic Mode</span></a>
+
+    <div class="grouplbl">🗺️ 지식 그래프</div>
+    <a href="#s16" data-target="s16" data-search="16 지식 그래프 위키 생성"><span class="sdot bg6"></span><span class="sid">16</span><span>위키 생성</span></a>
+    <a href="#s17" data-target="s17" data-search="17 지식 그래프 위키 qa"><span class="sdot bg6"></span><span class="sid">17</span><span>위키 Q&amp;A</span></a>
+    <a href="#s17b" data-target="s17b" data-search="17-1 위키 qa 동작 원리"><span class="sdot bg6"></span><span class="sid">17-1</span><span>위키 Q&amp;A 동작 원리</span></a>
+
+    <div class="grouplbl">📦 기타</div>
+    <a href="#s18" data-target="s18" data-search="18 record 버튼 음성 입력 stt"><span class="sdot bg7"></span><span class="sid">18</span><span>Record 버튼 (STT)</span></a>
+    <a href="#s19" data-target="s19" data-search="19 캐시 응답 탭"><span class="sdot bg7"></span><span class="sid">19</span><span>캐시 응답 탭</span></a>
+    <a href="#s20" data-target="s20" data-search="20 prompts 폴더 커스터마이징"><span class="sdot bg7"></span><span class="sid">20</span><span>prompts/ 폴더</span></a>
+  </nav>
+</aside>
+<div class="scrim" id="scrim"></div>
+
+<div class="main">
+  <div class="topbar">
+    <button class="iconbtn menubtn" id="menubtn" title="Menu" style="margin-left:0">☰</button>
+    <h1>SKHU Agent 사용설명서</h1>
+    <span class="ver">박종범 강사 · jongbum3.park@sk.com</span>
+    <button class="iconbtn" id="themebtn" title="테마 전환">◑</button>
+  </div>
+
+  <div class="content" id="content">
+
+    <!-- ===================== INTRO / OVERVIEW ===================== -->
+    <section id="intro" class="hero">
+      <h2>Coding Based Education Is Almost Solved</h2>
+      <p class="lede"><em>You can teach yourself by yourself.</em></p>
+
+      <h3>배경 (Motivation) &amp; 문제 정의 (Problem)</h3>
+      <p><strong>Motivation</strong></p>
+      <ul>
+        <li><span class="kw">LLM 추론 비용</span>의 급격한 감소로 셀 단위 의미 평가가 대규모로 실용화됨</li>
+        <li><span class="kw">Jupyter Notebook</span>은 ML·데이터 과학·알고리즘 교육의 사실상 표준 형식으로 자리잡음</li>
+        <li>그러나 기존 도구는 문서 전체를 검색 단위로 취급하며, <span class="kw">셀(cell)</span>을 독립 검색 단위로 다루지 않음</li>
+        <li>학생들은 수업 외 시간에 <span class="kw">키워드 검색</span> 또는 <span class="kw">전체 재독</span>이라는 비효율적 수단에 의존</li>
+      </ul>
+      <p><strong>Problem</strong></p>
+      <ul>
+        <li>대학 코딩 강의는 지식을 <span class="kw">.ipynb</span> 형식으로 배포하지만, 강의 자료 누적 시 탐색 비용이 급증</li>
+        <li>수업 외 시간에 특정 코드·개념을 <span class="kw">쿼리·교차 참조</span>할 효율적 수단이 부재</li>
+        <li><span class="kw">키워드 검색</span>은 코드의 의미적 맥락을 포착하지 못하고, <span class="kw">전체 재독</span>은 시간 소모적</li>
+        <li><span class="kw">비동기 학습 환경</span>에서 강사에게 즉시 질문할 수 없어 자기주도 이해에 큰 장벽 존재</li>
+      </ul>
+
+      <h3>연구 질문 (Research Questions) &amp; 목표 (Objective)</h3>
+      <p><strong>Research Questions</strong></p>
+      <ul>
+        <li><strong>Q1.</strong> <span class="kw">하이브리드 검색</span>(Vector + BM25 + Graph)이 키워드 검색 대비 코드·개념 Q&amp;A 정확도를 향상시키는가?</li>
+        <li><strong>Q2.</strong> <span class="kw">Force Mode</span>(전 셀 LLM 평가)가 인덱스 기반 검색보다 정밀 코드 탐색에서 더 높은 <span class="kw">재현율</span>을 달성하는가?</li>
+        <li><strong>Q3.</strong> <span class="kw">Agentic Mode</span>(계획 기반 다단계 에이전트)가 복합·비교·"모두 나열" 형 질문에 단일 패스 RAG보다 더 완전한 답변을 생성하는가?</li>
+      </ul>
+      <p><strong>Objective</strong></p>
+      <ul>
+        <li><span class="kw">하이브리드 RAG 파이프라인</span>(Vector + BM25 + Graph RAG)으로 <code>.ipynb</code> 강의 자료의 <span class="kw">셀 단위 의미 검색</span> 지원</li>
+        <li>검색 전략 단계적 확장: <span class="kw">일반 RAG</span> → <span class="kw">Force Mode</span> → <span class="kw">Agentic Mode</span> (질문 복잡도에 따라 선택)</li>
+        <li><span class="kw">자기주도 학습</span>이 가능한 대화형 강의 보조 시스템 구축 — 강사 부재 시에도 지도 교육에 준하는 이해 달성</li>
+        <li>강의 자료 변경 시 <span class="kw">자동 재색인</span> 및 <span class="kw">지식 그래프·위키 자동 생성</span>으로 지속적 학습 지원</li>
+      </ul>
+
+      <h3>시스템 모델 &amp; 제약 조건</h3>
+      <p><strong>System Model</strong></p>
+      <ul>
+        <li>입력: 쿼리 <em>q</em> + N개 Jupyter 노트북 코퍼스 <em>D</em> (각 노트북 → 셀 c₁…cₖ 분해)</li>
+        <li>검색: <span class="kw">Vector(FAISS)</span> + <span class="kw">BM25</span> + <span class="kw">Graph RAG</span> 병렬 수행 후 앙상블 병합 (최대 10 docs)</li>
+        <li>출력: <span class="kw">셀 출처 S ⊆ D</span>와 함께, 검색된 근거만으로 생성된 근거 기반 답변 <em>a</em></li>
+      </ul>
+      <p><strong>Assumptions</strong></p>
+      <ul>
+        <li>셀 경계가 의미 있게 구성됨 (셀당 하나의 개념 또는 코드 블록)</li>
+        <li><span class="kw">kiwipiepy</span> 한국어 형태소 분석으로 기술 한국어 텍스트의 BM25 재현율 향상</li>
+        <li><span class="kw">FAISS 인덱스</span>가 대상 코퍼스 크기(&lt; 10,000 셀)에서 호스트 RAM 내 적재 가능</li>
+      </ul>
+      <p><strong>Success Criteria</strong></p>
+      <ul>
+        <li>사실적 답변의 ≥ 80%에서 <span class="kw">관련 셀 출처</span> 인용</li>
+        <li>Force Mode: 상위 5개 청크 내 <span class="kw">목표 코드 스니펫</span> 반환</li>
+        <li>Agentic Mode: <span class="kw">3회 반복</span> 내 모든 하위 질문 완전 커버</li>
+      </ul>
+      <p><strong>Constraints</strong></p>
+      <ul>
+        <li>입력 코퍼스 <span class="kw">.ipynb</span> 한정 (PDF · <code>.py</code> · 텍스트 파일 제외)</li>
+        <li><span class="kw">외부 LLM API</span> 필수 (OpenAI 또는 호환 로컬 엔드포인트); 온디바이스 추론 미지원</li>
+        <li>노트북 변경 시 <span class="kw">수동 인덱스 재구축</span> 필요 (실시간 증분 인덱싱 미지원)</li>
+        <li>Agentic Mode · Wiki 생성은 <span class="kw">완성된 RAG 인덱스</span> 선행 필요</li>
+      </ul>
+
+      <h3>섹션 가이드</h3>
+      <p class="ver" style="font-size:13.5px">아래 사이드바에서 카테고리별로 섹션을 찾아보세요. 색이 있는 점은 사이드바 항목과 동일한 카테고리를 의미합니다.</p>
+      <div class="roadmap">
+        <div class="stagecard"><h4><span class="sdot bg2"></span>⚙️ 설정</h4><ul>
+          <li>1 시작 전 준비</li><li>2 env.txt 환경변수</li>
+          <li>3 설정 패널 — 디렉토리</li><li>4 설정 패널 — LLM/검색/Force</li></ul></div>
+        <div class="stagecard"><h4><span class="sdot bg3"></span>⌨️ 단축키</h4><ul>
+          <li>5 전역·입력창 공통</li><li>6 노트북 뷰어 셀 분석</li></ul></div>
+        <div class="stagecard"><h4><span class="sdot bg4"></span>📓 노트북 뷰어</h4><ul>
+          <li>7 아웃라인</li><li>8 선택 모드</li><li>9 요약 보기</li>
+          <li>10 요약 모드 채팅</li><li>11 전체 모드 채팅</li><li>12 실행 예측</li></ul></div>
+        <div class="stagecard"><h4><span class="sdot bg5"></span>💬 채팅 모드</h4><ul>
+          <li>13 기본 사용</li><li>14 Force Mode <code>/f</code></li><li>15 Agentic Mode <code>/a</code></li></ul></div>
+        <div class="stagecard"><h4><span class="sdot bg6"></span>🗺️ 지식 그래프</h4><ul>
+          <li>16 위키 생성</li><li>17 위키 Q&amp;A</li><li>17-1 동작 원리</li></ul></div>
+        <div class="stagecard"><h4><span class="sdot bg7"></span>📦 기타</h4><ul>
+          <li>18 Record 버튼 (STT)</li><li>19 캐시 응답 탭</li><li>20 prompts/ 폴더</li></ul></div>
+      </div>
+    </section>
+
+    <!-- ===================== 1 ===================== -->
+    <section class="module" id="s1">
+      <div class="mod-head"><span class="mod-num">1</span><div><h2>시작 전 준비</h2><p class="tagline">처음 실행하기 전 4단계</p></div></div>
+      <ol>
+        <li><code>dist/SKHU_Agent/</code> 폴더 열기</li>
+        <li><strong>env.txt</strong> 에 OpenAI API Key 입력</li>
+        <li><code>work/</code> 폴더에 분석할 <code>.ipynb</code> 파일 배치</li>
+        <li><code>SKHU_Agent.exe</code> 실행 → 좌측 <strong>🚀 RAG 시스템 구축</strong> 클릭</li>
+      </ol>
+      <div class="callout warn"><b>⚠️ <code>.ipynb</code>(Jupyter Notebook)만 인식합니다.</b><br><code>.py</code> / <code>.pdf</code> / <code>.csv</code> / <code>.txt</code> 등은 분석 대상이 <strong>아닙니다.</strong></div>
+      <p class="next">→ 다음: <a href="#s2">2. env.txt — 필수 환경변수</a></p>
+    </section>
+
+    <!-- ===================== 2 ===================== -->
+    <section class="module" id="s2">
+      <div class="mod-head"><span class="mod-num">2</span><div><h2>env.txt — 필수 환경변수</h2><p class="tagline">API 키와 모델 설정을 한 곳에서 관리</p></div></div>
+      <div class="codeblock"><div class="code-cap">env.txt</div><pre><code>OPENAI_API_KEY=sk-...
+LLM_MODEL=gpt-4o
+LLM_BASE_URL=
+EMBEDDING_BASE_URL=
+EMBEDDING_MODEL=text-embedding-ada-002
+FORCE_WORKERS=3</code></pre></div>
+      <table>
+        <tr><th>키</th><th>설명</th></tr>
+        <tr><td><code>OPENAI_API_KEY</code></td><td>OpenAI API Key (필수)</td></tr>
+        <tr><td><code>LLM_MODEL</code></td><td>답변 생성 모델</td></tr>
+        <tr><td><code>LLM_BASE_URL</code></td><td>OpenAI는 빈값, 로컬은 <code>http://localhost:11434/v1</code> 등</td></tr>
+        <tr><td><code>EMBEDDING_BASE_URL</code> / <code>EMBEDDING_MODEL</code></td><td>임베딩 서버·모델 (선택)</td></tr>
+        <tr><td><code>FORCE_WORKERS</code></td><td>Force Mode 병렬 워커 초기값 (1–10)</td></tr>
+      </table>
+      <p class="next">→ 다음: <a href="#s3">3. 설정 패널 — 디렉토리</a></p>
+    </section>
+
+    <!-- ===================== 3 ===================== -->
+    <section class="module" id="s3">
+      <div class="mod-head"><span class="mod-num">3</span><div><h2>설정 패널 — 디렉토리</h2><p class="tagline">노트북 위치와 캐시 위치 지정</p></div></div>
+      <table>
+        <tr><th>항목</th><th>기본값</th><th>설명</th></tr>
+        <tr><td>📁 노트북 디렉토리</td><td><code>work</code></td><td>분석할 <code>.ipynb</code> 파일 폴더</td></tr>
+        <tr><td>💾 RAG 캐시 디렉토리</td><td><code>.rag_cache</code></td><td>FAISS · BM25 · 요약 캐시 저장 위치</td></tr>
+      </table>
+      <ul>
+        <li><code>…</code> 버튼으로 폴더 탐색기에서 선택</li>
+        <li>경로 변경 후에는 <strong>🚀 RAG 시스템 구축</strong> 다시 클릭</li>
+        <li>노트북 파일 변경은 30초마다 자동 감지 → 상태바 알림</li>
+      </ul>
+      <p class="next">→ 다음: <a href="#s4">4. 설정 패널 — LLM / 검색 / Force</a></p>
+    </section>
+
+    <!-- ===================== 4 ===================== -->
+    <section class="module" id="s4">
+      <div class="mod-head"><span class="mod-num">4</span><div><h2>설정 패널 — LLM / 검색 / Force</h2><p class="tagline">모델·검색 전략·병렬도 조정</p></div></div>
+      <h3>🤖 LLM · 🔢 Embedding</h3>
+      <ul><li>Base URL · 모델명 · API Key (env.txt 값이 자동 로드)</li></ul>
+      <h3>🔍 검색 모드 (일반 채팅)</h3>
+      <ul><li>🔀 통합(권장) · 📐 Vector · 🔤 BM25 · 🕸️ Graph</li></ul>
+      <h3>⚡ Force Mode 워커 수</h3>
+      <ul>
+        <li>SpinBox 1–10, 실시간 반영, env.txt <code>FORCE_WORKERS</code> 가 초기값</li>
+        <li>클수록 빠르지만 API 비용 ↑</li>
+      </ul>
+      <p class="next">→ 다음: <a href="#s5">5. 단축키 — 전역 · 입력창 공통</a></p>
+    </section>
+
+    <!-- ===================== 5 ===================== -->
+    <section class="module" id="s5">
+      <div class="mod-head"><span class="mod-num">5</span><div><h2>⌨️ 단축키 — 전역 · 입력창 공통</h2><p class="tagline">어느 탭에서나 동작하는 단축키</p></div></div>
+      <h3>전역 단축키 (어느 탭에서나 동작)</h3>
+      <table>
+        <tr><th>단축키</th><th>동작</th></tr>
+        <tr><td><code>F1</code></td><td>도움말 팝업 표시</td></tr>
+        <tr><td><code>Ctrl+B</code></td><td>좌측 <strong>설정 패널</strong> 접기 / 펼치기</td></tr>
+        <tr><td><code>Ctrl+F</code></td><td>노트북 탭 <strong>목록 패널</strong> 접기 / 펼치기</td></tr>
+      </table>
+      <h3>입력창 공통 (채팅 탭 · 노트북 셀 Q&amp;A · 지식 그래프 Q&amp;A)</h3>
+      <table>
+        <tr><th>단축키</th><th>동작</th></tr>
+        <tr><td><code>Enter</code></td><td>메시지 전송</td></tr>
+        <tr><td><code>Shift+Enter</code></td><td>입력창 줄바꿈</td></tr>
+        <tr><td><code>↑</code></td><td>이전 입력 기록으로 이동</td></tr>
+        <tr><td><code>↓</code></td><td>다음 입력 기록으로 이동</td></tr>
+      </table>
+      <p class="next">→ 다음: <a href="#s6">6. 단축키 — 노트북 뷰어 셀 분석</a></p>
+    </section>
+
+    <!-- ===================== 6 ===================== -->
+    <section class="module" id="s6">
+      <div class="mod-head"><span class="mod-num">6</span><div><h2>⌨️ 단축키 — 노트북 뷰어 셀 분석</h2><p class="tagline">선택한 텍스트에 즉시 질문하기</p></div></div>
+      <p>노트북 셀 뷰어에서 텍스트를 선택하거나 단어를 더블클릭한 뒤 사용합니다.</p>
+      <table>
+        <tr><th>단축키</th><th>동작</th><th>트리거 조건</th></tr>
+        <tr><td><code>Ctrl+W</code></td><td>단어 <strong>연관 관계 분석</strong> (Word Graph)</td><td>단어 더블클릭 후</td></tr>
+        <tr><td><code>Ctrl+D</code></td><td>Python <strong>정의 및 문법 설명</strong> (Define)</td><td>단어 선택 또는 더블클릭 후</td></tr>
+        <tr><td><code>Ctrl+S</code></td><td>선택 텍스트 <strong>단계별 상세 설명</strong> (Explain)</td><td>텍스트 드래그 선택 후</td></tr>
+        <tr><td><code>Ctrl+P</code></td><td>선택 텍스트를 <strong>채팅 입력창에 붙여넣기</strong></td><td>텍스트 드래그 선택 후</td></tr>
+        <tr><td><code>Ctrl+=</code> / <code>Ctrl++</code></td><td>셀·요약 뷰 <strong>글꼴 크기 확대</strong></td><td>셀·요약 탭 포커스 시</td></tr>
+        <tr><td><code>Ctrl+-</code></td><td>셀·요약 뷰 <strong>글꼴 크기 축소</strong></td><td>셀·요약 탭 포커스 시</td></tr>
+        <tr><td><code>Ctrl+0</code></td><td>글꼴 크기 <strong>기본값(13px)으로 초기화</strong></td><td>셀·요약 탭 포커스 시</td></tr>
+      </table>
+      <div class="callout">결과는 우측 셀 채팅 패널에 스트리밍으로 표시됩니다.</div>
+      <p class="next">→ 다음: <a href="#s7">7. 노트북 뷰어 — 아웃라인</a></p>
+    </section>
+
+    <!-- ===================== 7 ===================== -->
+    <section class="module" id="s7">
+      <div class="mod-head"><span class="mod-num">7</span><div><h2>📓 노트북 뷰어 — 아웃라인</h2><p class="tagline">노트북 구조를 트리로 한눈에</p></div></div>
+      <p>좌측 <strong>아웃라인 패널</strong>: 노트북의 셀 구조를 트리로 표시</p>
+      <ul>
+        <li>마크다운 헤더 / 코드 셀이 계층으로 정렬됨</li>
+        <li>항목 클릭 → 해당 셀로 즉시 점프</li>
+        <li><strong>☑ 선택 모드</strong> ON 상태에서 체크박스로 셀 범위 선택 → 채팅 컨텍스트로 사용</li>
+      </ul>
+      <div class="callout">큰 노트북을 빠르게 훑고, 채팅에 보낼 셀을 고르는 데 사용합니다.</div>
+      <p class="next">→ 다음: <a href="#s8">8. 선택 모드</a></p>
+    </section>
+
+    <!-- ===================== 8 ===================== -->
+    <section class="module" id="s8">
+      <div class="mod-head"><span class="mod-num">8</span><div><h2>☑ 선택 모드 (Selection Mode)</h2><p class="tagline">셀 선택 기능 켜고 끄기</p></div></div>
+      <p>셀 보기 상단의 <strong>☑ 선택 모드</strong> 버튼으로 셀 선택 기능을 켜고 끕니다.</p>
+      <table>
+        <tr><th>상태</th><th>동작</th></tr>
+        <tr><td>OFF (기본)</td><td>셀 클릭 → 뷰어 스크롤만, 체크박스 없음</td></tr>
+        <tr><td>ON</td><td>셀 뷰어·아웃라인 패널에 체크박스 표시, 다중 선택 가능</td></tr>
+      </table>
+      <h3>선택 방법</h3>
+      <ul>
+        <li>셀 뷰어의 체크박스 직접 클릭</li>
+        <li>아웃라인 트리의 체크박스 클릭 (헤더 단위 일괄 선택)</li>
+        <li>Shift+클릭으로 범위 선택</li>
+      </ul>
+      <div class="callout">선택한 셀들이 Q&amp;A 채팅의 컨텍스트로 사용됩니다.</div>
+      <p class="next">→ 다음: <a href="#s9">9. 노트북 뷰어 — 요약 보기</a></p>
+    </section>
+
+    <!-- ===================== 9 ===================== -->
+    <section class="module" id="s9">
+      <div class="mod-head"><span class="mod-num">9</span><div><h2>📓 노트북 뷰어 — 요약 보기</h2><p class="tagline">LLM이 만드는 한국어 요약 카드</p></div></div>
+      <p>노트북 체크 → <strong>📝 요약 생성</strong> → LLM이 한국어 요약 카드 생성</p>
+      <ul>
+        <li>🔵 파란 표시 = 요약 완료된 노트북</li>
+        <li>⏹ 중지 버튼으로 즉시 중단</li>
+        <li>결과는 디스크에 캐시 (MD5로 변경 감지 시 자동 재요약)</li>
+      </ul>
+      <h3>요약 카드 헤더 버튼</h3>
+      <ul>
+        <li>📋 <strong>MD복사</strong> — raw Markdown 복사</li>
+        <li>🎯 <strong>Marp</strong> — <code>##</code> 기준 슬라이드 분리 + Marp front matter 자동 추가</li>
+        <li>✏️ <strong>프롬프트 편집</strong> — <code>prompts/summary_prompt.txt</code> 직접 수정</li>
+      </ul>
+      <p class="next">→ 다음: <a href="#s10">10. 셀 보기+채팅 — 요약 모드</a></p>
+    </section>
+
+    <!-- ===================== 10 ===================== -->
+    <section class="module" id="s10">
+      <div class="mod-head"><span class="mod-num">10</span><div><h2>📓 셀 보기 + 채팅 — 요약 모드</h2><p class="tagline">빠르고 저렴한 개괄 질문용</p></div></div>
+      <p>좌측 Jupyter 스타일 셀 렌더링, 우측 셀 Q&amp;A 채팅 패널</p>
+      <h3>요약 모드 (기본)</h3>
+      <ul>
+        <li>컨텍스트 = <code>노트북 요약</code> + <code>체크한 셀</code></li>
+        <li>⚡ 빠르고 💰 저렴</li>
+        <li>요약이 없으면 질문 시 자동 생성 후 답변</li>
+      </ul>
+      <div class="callout">처음 보는 노트북을 개괄적으로 물어볼 때 사용.</div>
+      <p class="next">→ 다음: <a href="#s11">11. 셀 보기+채팅 — 전체 모드</a></p>
+    </section>
+
+    <!-- ===================== 11 ===================== -->
+    <section class="module" id="s11">
+      <div class="mod-head"><span class="mod-num">11</span><div><h2>📓 셀 보기 + 채팅 — 전체 모드</h2><p class="tagline">정확도 우선, 코드 정밀 분석용</p></div></div>
+      <h3>전체 모드</h3>
+      <ul>
+        <li>컨텍스트 = <code>노트북 전체 셀</code> + 선택 셀에 <code>[★ 선택됨]</code> 마킹</li>
+        <li>🎯 정확도 ↑ · 💰 비용 ↑</li>
+        <li>셀 간 의존 관계까지 따져야 하는 코드 질문에 적합</li>
+      </ul>
+      <table>
+        <tr><th>모드</th><th>컨텍스트</th><th>추천 상황</th></tr>
+        <tr><td>요약 모드</td><td>요약 + 선택 셀</td><td>개념 질문, 빠른 확인</td></tr>
+        <tr><td>전체 모드</td><td>전체 셀 + 마킹</td><td>코드 정밀 분석</td></tr>
+      </table>
+      <p class="next">→ 다음: <a href="#s12">12. 셀 보기+채팅 — 실행 예측</a></p>
+    </section>
+
+    <!-- ===================== 12 ===================== -->
+    <section class="module" id="s12">
+      <div class="mod-head"><span class="mod-num">12</span><div><h2>📓 셀 보기 + 채팅 — 실행 예측 (LLM Emulation)</h2><p class="tagline">실행 없이 결과를 미리 가늠해보기</p></div></div>
+      <p>노트북을 <strong>실제로 실행하지 않고</strong>, LLM이 처음부터 끝까지 실행한다고 가정하여 각 셀의 결과를 예측합니다.</p>
+      <ol>
+        <li>셀 보기 우측 채팅 패널 상단 <strong>▶ 실행 예측</strong> 버튼 클릭</li>
+        <li>LLM이 코드 셀을 순서대로 <strong>모의 실행</strong> — 변수·함수·임포트 상태를 다음 셀까지 이어감</li>
+        <li>각 코드 셀마다 <code>### 셀 #N 실행 결과</code> 아래 예상 출력 표시 (<code>print</code>, 표현식 자동 출력 등 Jupyter 컨벤션)</li>
+        <li>에러가 예상되면 Traceback 형태로 표시 + 이후 셀에 미치는 영향까지 예측</li>
+        <li>마크다운 셀은 건너뛰고 <strong>코드 셀만</strong> 대상</li>
+      </ol>
+      <h3>캐시 &amp; 재예측</h3>
+      <ul>
+        <li>노트북별로 결과 캐시 (<code>run_predict_cache.json</code>) — 파일 MD5 + 프롬프트 MD5로 변경 감지</li>
+        <li>노트북·프롬프트 변경이 없으면 버튼 재클릭 시 <strong>LLM 재호출 없이</strong> 캐시된 예측을 즉시 표시</li>
+        <li>🔄 버튼 — 캐시를 무시하고 강제로 다시 예측</li>
+      </ul>
+      <div class="callout warn">실행 환경이 없거나, 실행 전 결과를 미리 가늠해 보고 싶을 때 사용합니다.<br><strong>실제 실행 결과가 아닌 LLM의 예측</strong>이므로 참고용으로만 활용하세요.</div>
+      <p>시스템 프롬프트: <code>prompts/notebook_run_predict_prompt.txt</code> (없으면 기본 프롬프트 사용)</p>
+      <p class="next">→ 다음: <a href="#s13">13. 채팅 탭 — 기본 사용</a></p>
+    </section>
+
+    <!-- ===================== 13 ===================== -->
+    <section class="module" id="s13">
+      <div class="mod-head"><span class="mod-num">13</span><div><h2>💬 채팅 탭 — 기본 사용</h2><p class="tagline">RAG 인덱스 기반 표준 질의응답</p></div></div>
+      <ol>
+        <li>좌측에서 <strong>🚀 RAG 시스템 구축</strong> 완료 확인</li>
+        <li>입력창에 질문 → Enter 또는 <strong>전송</strong></li>
+        <li>답변이 토큰 단위로 스트리밍</li>
+      </ol>
+      <h3>부가 기능</h3>
+      <ul>
+        <li>후속 질문 — 최근 <strong>3턴</strong> 대화 기억 (<code>아까 그 코드</code> 등 가능)</li>
+        <li>예시 질문 칩(파란색) · 추천 쿼리 칩 — 클릭으로 즉시 질문</li>
+        <li>⏹ 중지 — 스트리밍 도중 부분 답변만 남기고 종료</li>
+        <li>🗑 초기화 — 히스토리 비움</li>
+        <li>답변 버블 우상단: 📋 <strong>MD복사</strong> / 🎯 <strong>Marp</strong></li>
+      </ul>
+      <p class="next">→ 다음: <a href="#s14">14. 채팅 탭 — Force Mode</a></p>
+    </section>
+
+    <!-- ===================== 14 ===================== -->
+    <section class="module" id="s14">
+      <div class="mod-head"><span class="mod-num">14</span><div><h2>💬 채팅 탭 — Force Mode <code>/f</code></h2><p class="tagline">인덱스 없이 전수 검색</p></div></div>
+      <p><code>/f</code> 접두어 = <strong>모든 노트북 전수 검색</strong> (RAG 인덱스 미사용)</p>
+      <div class="codeblock"><div class="code-cap">예시 입력</div><pre><code>/f 판다스 데이터프레임 병합 방법</code></pre></div>
+      <ul>
+        <li>모든 <code>.ipynb</code> → 5셀 청크 분할</li>
+        <li>N개 워커가 동시에 LLM으로 관련성 판단 → 관련 청크만 누적 표시</li>
+        <li>진행 바 <code>완료/전체</code>, ⏹ 중지로 즉시 종료</li>
+        <li>전각 슬래시(<code>／</code>) 등도 <code>/f</code>로 자동 변환</li>
+      </ul>
+      <table>
+        <tr><th>항목</th><th>일반 RAG</th><th>Force Mode</th></tr>
+        <tr><td>검색</td><td>인덱스 유사도</td><td>전 파일 LLM 판단</td></tr>
+        <tr><td>속도 / 비용</td><td>빠름 / 저렴</td><td>느림 / 비쌈</td></tr>
+        <tr><td>적합 상황</td><td>일반 질문</td><td>특정 코드 반드시 찾기</td></tr>
+      </table>
+      <p class="next">→ 다음: <a href="#s15">15. 채팅 탭 — Agentic Mode</a></p>
+    </section>
+
+    <!-- ===================== 15 ===================== -->
+    <section class="module" id="s15">
+      <div class="mod-head"><span class="mod-num">15</span><div><h2>💬 채팅 탭 — Agentic Mode <code>/a</code></h2><p class="tagline">계획 기반 다단계 검색</p></div></div>
+      <p><code>/a</code> 접두어 또는 모드 선택기에서 <strong>🧭 에이전트</strong> 선택 = <strong>계획 기반 다단계 검색</strong></p>
+      <div class="codeblock"><div class="code-cap">예시 입력</div><pre><code>/a 랭그래프에서 메모리와 체크포인터의 차이점을 모두 설명해줘</code></pre></div>
+      <p><strong>동작 흐름</strong>: 질문 분해 → 검색어별 병렬 검색 → 충분성 평가 → (부족 시 추가 검색 반복) → 최종 합성</p>
+      <table>
+        <tr><th>항목</th><th>일반 RAG</th><th>Agentic Mode</th></tr>
+        <tr><td>검색 횟수</td><td>1회</td><td>최대 3회 반복</td></tr>
+        <tr><td>적합 상황</td><td>단순 질문</td><td>복합·비교·"모두 나열" 질문</td></tr>
+      </table>
+      <ul>
+        <li>답변 위 <strong>🧭 추론 과정</strong> 블록에 계획·반복별 검색어·근거 수 표시</li>
+        <li><code>/a</code>는 1회성, 모드 선택기는 탭을 닫기 전까지 계속 적용</li>
+        <li><code>/f</code>(Force)가 <code>/a</code>보다 우선 검사됨</li>
+      </ul>
+      <p class="next">→ 다음: <a href="#s16">16. 지식 그래프 탭 — 위키 생성</a></p>
+    </section>
+
+    <!-- ===================== 16 ===================== -->
+    <section class="module" id="s16">
+      <div class="mod-head"><span class="mod-num">16</span><div><h2>🗺️ 지식 그래프 탭 — 위키 생성</h2><p class="tagline">노트북 내용을 그래프 + 위키로</p></div></div>
+      <p>RAG 빌드 완료 시 노트북 내용으로 <strong>지식 그래프 + 위키</strong>를 자동 생성합니다.</p>
+      <ul>
+        <li>노트북 디렉토리가 바뀌지 않으면 <strong>캐시에서 즉시 로드</strong> (재생성 불필요)</li>
+        <li><strong>🔨 위키 재생성</strong> 버튼으로 강제 재빌드 가능</li>
+        <li>생성 중 ⏹ 중지 버튼으로 즉시 취소</li>
+      </ul>
+      <h3>생성 결과</h3>
+      <ul>
+        <li>📊 <strong>그래프 뷰</strong> — 노드(개념)·엣지(관계)를 SVG로 시각화, <code>Ctrl+스크롤</code>로 줌</li>
+        <li>📄 <strong>위키 문서 탭</strong> — 노트북별 마크다운 위키 목록</li>
+        <li>📋 <strong>노트북 탭</strong> — 원본 노트북 요약 표</li>
+        <li>💡 <strong>개념 탭</strong> — 전체 개념 목록 테이블</li>
+      </ul>
+      <p class="next">→ 다음: <a href="#s17">17. 지식 그래프 탭 — 위키 Q&amp;A</a></p>
+    </section>
+
+    <!-- ===================== 17 ===================== -->
+    <section class="module" id="s17">
+      <div class="mod-head"><span class="mod-num">17</span><div><h2>🗺️ 지식 그래프 탭 — 위키 Q&amp;A</h2><p class="tagline">정리된 위키 문서로 빠른 질문</p></div></div>
+      <p>생성된 위키를 바탕으로 <strong>빠른 Q&amp;A</strong> 검색을 지원합니다.</p>
+      <ol>
+        <li>하단 입력창에 질문 입력 → Enter 또는 전송 버튼</li>
+        <li>위키 문서에서 관련 내용을 검색하여 스트리밍 답변</li>
+        <li>🗑 <strong>초기화</strong> 버튼으로 대화 히스토리 비우기</li>
+        <li>⏹ 중지 버튼으로 스트리밍 즉시 종료</li>
+      </ol>
+      <div class="callout">RAG 채팅 탭이 <strong>노트북 셀 단위</strong> 검색이라면, 위키 Q&amp;A는 <strong>정리된 위키 문서</strong> 기반으로 더 빠른 개념 검색에 적합합니다.</div>
+      <p class="next">→ 다음: <a href="#s17b">17-1. 위키 Q&amp;A — 동작 원리</a></p>
+    </section>
+
+    <!-- ===================== 17-1 ===================== -->
+    <section class="module" id="s17b">
+      <div class="mod-head"><span class="mod-num">17-1</span><div><h2>🗺️ 위키 Q&amp;A — 동작 원리 (핵심 개념)</h2><p class="tagline">임베딩이 아닌 키워드 매칭 방식</p></div></div>
+      <p>FAISS/BM25/Graph <strong>RAG 파이프라인을 쓰지 않고</strong>, 미리 생성된 위키 <code>.md</code> 페이지를 LLM 컨텍스트로 직접 넣는 <strong>경량 방식</strong>입니다.</p>
+      <table>
+        <tr><th>단계</th><th>내용</th></tr>
+        <tr><td>① 페이지 로드</td><td><code>wiki/*.md</code> 전체 로드 (<code>index.md</code>·<code>log.md</code> 제외)</td></tr>
+        <tr><td>② 키워드 매칭</td><td>질문을 단어로 분해 → 각 페이지에 등장한 단어 수로 점수 (<strong>임베딩 X</strong>)</td></tr>
+        <tr><td>③ 상위 선택</td><td>점수 상위 <strong>5개</strong> 페이지만 선택 (점수 0 제외)</td></tr>
+        <tr><td>④ 컨텍스트화</td><td>각 페이지 <strong>앞 500자</strong>만 잘라 결합</td></tr>
+        <tr><td>⑤ 답변</td><td>"위키 범위 내에서만 답하라" 지시로 LLM 스트리밍</td></tr>
+      </table>
+      <p><strong>잘 되는 질문</strong>: 자료의 용어를 그대로 쓴 개념·요약·비교 질문<br><strong>어려운 질문</strong>: 모호·짧은 질문, 동의어/영어, 페이지 500자 이후 세부 내용</p>
+      <div class="callout warn">⚠️ 위키를 <strong>먼저 생성</strong>해야 하며, 글자가 겹치지 않으면 검색되지 않습니다.<br>의미 기반 정밀 검색은 채팅 탭(일반 RAG·<code>/a</code>·<code>/f</code>)을 사용하세요.</div>
+      <p class="next">→ 다음: <a href="#s18">18. Record 버튼 — 음성으로 입력 만들기</a></p>
+    </section>
+
+    <!-- ===================== 18 ===================== -->
+    <section class="module" id="s18">
+      <div class="mod-head"><span class="mod-num">18</span><div><h2>🎤 Record 버튼 — 음성으로 입력 만들기</h2><p class="tagline">Whisper 기반 한국어 STT</p></div></div>
+      <p>채팅 입력창 옆 <strong>마이크 버튼</strong>으로 음성을 텍스트로 변환합니다.</p>
+      <h3>사용 흐름</h3>
+      <ol>
+        <li>🎤 클릭 → 녹음 시작 (버튼이 빨갛게 표시)</li>
+        <li>마이크에 질문 말하기</li>
+        <li>다시 클릭 → 녹음 정지</li>
+        <li>Whisper STT가 한국어로 받아쓰기 → 입력창에 자동 입력</li>
+        <li>Enter로 전송</li>
+      </ol>
+      <div class="callout">채팅 탭과 노트북 셀 채팅 모두에서 사용할 수 있습니다.</div>
+      <p class="next">→ 다음: <a href="#s19">19. 캐시 응답 탭</a></p>
+    </section>
+
+    <!-- ===================== 19 ===================== -->
+    <section class="module" id="s19">
+      <div class="mod-head"><span class="mod-num">19</span><div><h2>💾 캐시 응답 탭</h2><p class="tagline">지난 답변 다시 보기 · 복습</p></div></div>
+      <p>지난 AI 답변을 자동 저장해 <strong>다시 보기</strong>·<strong>복습</strong>용으로 제공합니다.</p>
+      <ul>
+        <li>📓 <strong>노트북 채팅 트리</strong> — 노트북별 Q&amp;A 묶음</li>
+        <li>💬 <strong>채팅 시간순 목록</strong> — 일반 채팅 답변</li>
+        <li>🔍 검색창으로 키워드 필터, 항목별 삭제 가능</li>
+        <li>저장 위치: <strong>캐시 디렉토리</strong> (<code>notebook_chat_cache.json</code>, <code>chat_cache.jsonl</code>)</li>
+      </ul>
+      <div class="callout">캐시 디렉토리를 바꾸면 새 위치로 답변이 누적됩니다.</div>
+      <p class="next">→ 다음: <a href="#s20">20. prompts/ 폴더 — 프롬프트 커스터마이징</a></p>
+    </section>
+
+    <!-- ===================== 20 ===================== -->
+    <section class="module" id="s20">
+      <div class="mod-head"><span class="mod-num">20</span><div><h2>📂 prompts/ 폴더 — 프롬프트 커스터마이징</h2><p class="tagline">모델 지시문을 직접 수정하기</p></div></div>
+      <table>
+        <tr><th>파일</th><th>적용 위치</th></tr>
+        <tr><td><code>system_prompt.txt</code></td><td>채팅 탭 일반 RAG 답변</td></tr>
+        <tr><td><code>notebook_chat_prompt.txt</code></td><td>노트북 셀 채팅 (요약/전체 모드)</td></tr>
+        <tr><td><code>notebook_run_predict_prompt.txt</code></td><td>실행 예측 — 노트북 실행 결과 LLM 모의 실행(에뮬레이션)</td></tr>
+        <tr><td><code>summary_prompt.txt</code></td><td>노트북 요약 생성 (✏️ 버튼으로 편집)</td></tr>
+        <tr><td><code>force_prompt.txt</code></td><td>Force Mode 관련성 판단</td></tr>
+        <tr><td><code>agentic_planner_prompt.txt</code></td><td>Agentic Mode — 질문 분해·검색어 재작성</td></tr>
+        <tr><td><code>agentic_sufficiency_prompt.txt</code></td><td>Agentic Mode — 충분성 게이트 판단</td></tr>
+        <tr><td><code>agentic_synthesis_prompt.txt</code></td><td>Agentic Mode — 최종 답변 합성</td></tr>
+      </table>
+      <ul>
+        <li>파일이 <strong>없으면</strong> 내장 기본 프롬프트가 사용됩니다.</li>
+        <li>저장 후 <strong>다음 호출부터</strong> 즉시 반영.</li>
+        <li>단, 요약은 디스크에 캐시되므로 <strong>재요약</strong>이 필요합니다 (노트북 변경 시 자동 무효화).</li>
+      </ul>
+    </section>
+
+    <section class="module" id="end">
+      <div class="mod-head"><span class="mod-num">끝</span><div><h2>끝.</h2><p class="tagline">질문이나 피드백은 언제든 환영합니다.</p></div></div>
+      <p>질문 / 피드백 → <strong>jongbum3.park@sk.com</strong></p>
+    </section>
+  </div>
+</div>
+
+<script>
+/* ============ THEME ============ */
+const themebtn=document.getElementById('themebtn');
+function setTheme(t){document.documentElement.setAttribute('data-theme',t);try{localStorage.setItem('skhu-theme',t)}catch(e){}}
+themebtn.addEventListener('click',()=>setTheme(document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark'));
+setTheme((()=>{try{return localStorage.getItem('skhu-theme')}catch(e){}})()||'dark');
+
+/* ============ SCROLL-SPY ============ */
+const navEl=document.getElementById('nav');
+const navLinks=[...navEl.querySelectorAll('a')];
+const linkFor=id=>navLinks.find(a=>a.dataset.target===id);
+const sectionIds=['intro','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12','s13','s14','s15','s16','s17','s17b','s18','s19','s20','end'];
+const spy=new IntersectionObserver(entries=>{
+  entries.forEach(en=>{
+    if(en.isIntersecting){
+      navLinks.forEach(a=>a.classList.remove('active'));
+      const l=linkFor(en.target.id); if(l)l.classList.add('active');
+    }
+  });
+},{rootMargin:'-40% 0px -55% 0px',threshold:0});
+sectionIds.forEach(id=>{const el=document.getElementById(id);if(el)spy.observe(el)});
+
+/* ============ FILTER ============ */
+const filter=document.getElementById('filter');
+filter.addEventListener('input',()=>{
+  const q=filter.value.trim().toLowerCase();
+  navLinks.forEach(a=>{
+    if(!a.dataset.search)return; // keep intro link always visible
+    a.style.display=a.dataset.search.toLowerCase().includes(q)?'':'none';
+  });
+  // hide group labels whose entire group is filtered out
+  [...navEl.querySelectorAll('.grouplbl')].forEach(lbl=>{
+    let sib=lbl.nextElementSibling, anyVisible=false;
+    while(sib && !sib.classList.contains('grouplbl')){
+      if(sib.style.display!=='none') anyVisible=true;
+      sib=sib.nextElementSibling;
+    }
+    lbl.style.display=anyVisible?'':'none';
+  });
+});
+
+/* ============ MOBILE SIDEBAR ============ */
+const sidebar=document.getElementById('sidebar'),scrim=document.getElementById('scrim'),menubtn=document.getElementById('menubtn');
+function closeSidebar(){sidebar.classList.remove('open');scrim.classList.remove('show')}
+menubtn.addEventListener('click',()=>{sidebar.classList.toggle('open');scrim.classList.toggle('show')});
+scrim.addEventListener('click',closeSidebar);
+navEl.addEventListener('click',e=>{if(e.target.closest('a')&&window.innerWidth<=920)closeSidebar()});
+</script>
+</body>
+</html>
