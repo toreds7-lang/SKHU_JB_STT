@@ -18,6 +18,7 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWebEngineCore import QWebEnginePage
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from ui.stt_button import STTButton
+from ui.zoomable_webview import ZoomableWebView
 
 from cache_store import ChatCache
 
@@ -437,8 +438,8 @@ class ChatTab(QWidget):
         self._viewer_splitter.setSizes([0, 1])  # 초기: 노트북 목록 패널 숨김
         outer.addWidget(self._viewer_splitter)
 
-        # ── 채팅 히스토리 (QWebEngineView) ────────────────────────────────────
-        self.chat_display = QWebEngineView()
+        # ── 채팅 히스토리 (QWebEngineView, Ctrl+휠 확대/축소) ─────────────────
+        self.chat_display = ZoomableWebView()
         self.chat_display.setPage(_ExternalLinkPage(
             self.chat_display,
             save_handler=self._handle_save_request,

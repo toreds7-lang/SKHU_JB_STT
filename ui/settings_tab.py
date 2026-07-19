@@ -20,7 +20,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QPlainTextEdit, QSplitter, QGroupBox, QCheckBox, QPushButton, QDialog,
-    QInputDialog, QMessageBox,
+    QInputDialog, QMessageBox, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QTextCharFormat
@@ -52,6 +52,44 @@ class _QAInput(QPlainTextEdit):
                 self.returnPressed.emit()     # 제출
             return
         super().keyPressEvent(event)
+
+
+class _ZoomableContentView(QPlainTextEdit):
+    """Ctrl+휠로 글꼴 확대/축소가 되는 파일 내용 뷰.
+
+    앱 전역 QSS(dark_theme.qss)가 `QWidget { font-size: 12px; }`를 지정하므로
+    zoomIn()/zoomOut()의 QFont 변경은 스타일시트에 덮여 보이지 않는다.
+    위젯 자체 스타일시트의 font-size를 갱신하는 방식으로 확대/축소한다.
+    """
+
+    _MIN_PX = 7
+    _MAX_PX = 32
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._font_px = 12
+        self._apply_font_style()
+
+    def _apply_font_style(self):
+        self.setStyleSheet(
+            "QPlainTextEdit { background: #111827; color: #f8f8f2; "
+            "border: 1px solid #2a3045; border-radius: 6px; padding: 8px; "
+            "font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace; "
+            f"font-size: {self._font_px}px; }}"
+        )
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                step = 1 if delta > 0 else -1
+                new_px = max(self._MIN_PX, min(self._MAX_PX, self._font_px + step))
+                if new_px != self._font_px:
+                    self._font_px = new_px
+                    self._apply_font_style()
+            event.accept()
+            return
+        super().wheelEvent(event)
 
 
 class SettingsTab(QWidget):
@@ -132,14 +170,16 @@ class SettingsTab(QWidget):
         hint.setStyleSheet("color: #64748b; font-size: 11px;")
         layout.addWidget(hint)
 
-        outer_splitter = QSplitter(Qt.Orientation.Horizontal)
-
-        outer_splitter.addWidget(self._build_left_panel())
-        outer_splitter.addWidget(self._build_right_panel())
-        outer_splitter.setStretchFactor(0, 0)
-        outer_splitter.setStretchFactor(1, 1)
-        outer_splitter.setSizes([260, 700])
-        layout.addWidget(outer_splitter)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(self._build_left_panel())
+        splitter.addWidget(self._build_file_panel())
+        splitter.addWidget(self._build_chat_panel())
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(2, 2)
+        splitter.setSizes([260, 640, 420])
+        layout.addWidget(splitter, 1)
 
     def _build_left_panel(self) -> QWidget:
         left = QWidget()
@@ -210,16 +250,8 @@ class SettingsTab(QWidget):
         self.unsaved_label.setStyleSheet("color: #fbbf24; font-size: 10px;")
         left_layout.addWidget(self.unsaved_label)
 
+        left.setMinimumWidth(200)
         return left
-
-    def _build_right_panel(self) -> QWidget:
-        right_splitter = QSplitter(Qt.Orientation.Vertical)
-        right_splitter.addWidget(self._build_chat_panel())
-        right_splitter.addWidget(self._build_file_panel())
-        right_splitter.setStretchFactor(0, 0)
-        right_splitter.setStretchFactor(1, 1)
-        right_splitter.setSizes([260, 400])
-        return right_splitter
 
     def _build_chat_panel(self) -> QWidget:
         panel = QWidget()
@@ -237,18 +269,6 @@ class SettingsTab(QWidget):
         self.qa_display.setUrl(QUrl.fromLocalFile(str(html_path.resolve())))
         v.addWidget(self.qa_display, 1)
 
-        input_row = QHBoxLayout()
-        self.qa_input = _QAInput()
-        self.qa_input.setPlaceholderText("설정 파라미터에 대해 질문하세요… (예: VECTOR_K가 뭐야?)")
-        self.qa_input.setFixedHeight(48)
-        self.qa_input.setStyleSheet(
-            "QPlainTextEdit { background: #161922; color: #e2e8f0; "
-            "border: 1px solid #2a3045; border-radius: 6px; padding: 6px; font-size: 12px; }"
-        )
-        self.qa_input.returnPressed.connect(self._on_ask_clicked)
-        input_row.addWidget(self.qa_input, 1)
-
-        btn_col = QVBoxLayout()
         self.ask_btn = QPushButton("Ask")
         self.preview_btn = QPushButton("Preview")
         self.edit_btn = QPushButton("Edit")
@@ -262,16 +282,34 @@ class SettingsTab(QWidget):
                 "QPushButton:hover { background: #2d3748; color: #e2e8f0; }"
                 "QPushButton:disabled { color: #475569; }"
             )
-            btn_col.addWidget(b)
         self.preview_btn.setEnabled(False)
         self.ask_btn.clicked.connect(self._on_ask_clicked)
         self.preview_btn.clicked.connect(self._on_preview_clicked)
         self.edit_btn.clicked.connect(self._enter_edit_mode)
         self.discard_btn.clicked.connect(self._discard_edits)
         self.clear_btn.clicked.connect(self._on_clear_qa_clicked)
-        input_row.addLayout(btn_col)
+
+        toolbar_row = QHBoxLayout()
+        for b in (self.preview_btn, self.edit_btn, self.discard_btn, self.clear_btn):
+            toolbar_row.addWidget(b)
+        toolbar_row.addStretch(1)
+        v.addLayout(toolbar_row)
+
+        input_row = QHBoxLayout()
+        self.qa_input = _QAInput()
+        self.qa_input.setPlaceholderText("설정 파라미터에 대해 질문하세요… (예: VECTOR_K가 뭐야?)")
+        self.qa_input.setFixedHeight(48)
+        self.qa_input.setStyleSheet(
+            "QPlainTextEdit { background: #161922; color: #e2e8f0; "
+            "border: 1px solid #2a3045; border-radius: 6px; padding: 6px; font-size: 12px; }"
+        )
+        self.qa_input.returnPressed.connect(self._on_ask_clicked)
+        input_row.addWidget(self.qa_input, 1)
+        self.ask_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        input_row.addWidget(self.ask_btn)
 
         v.addLayout(input_row)
+        panel.setMinimumWidth(300)
         return panel
 
     def _build_file_panel(self) -> QWidget:
@@ -316,17 +354,13 @@ class SettingsTab(QWidget):
         self.warning_banner.setVisible(False)
         right_layout.addWidget(self.warning_banner)
 
-        self.content_view = QPlainTextEdit()
+        self.content_view = _ZoomableContentView()
         self.content_view.setReadOnly(True)
-        self.content_view.setFont(QFont("JetBrains Mono, Consolas, Courier New", 11))
         self.content_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.content_view.setPlaceholderText(self.PLACEHOLDER_EMPTY)
-        self.content_view.setStyleSheet(
-            "QPlainTextEdit { background: #111827; color: #f8f8f2; "
-            "border: 1px solid #2a3045; border-radius: 6px; padding: 8px; }"
-        )
         right_layout.addWidget(self.content_view, 1)
 
+        right.setMinimumWidth(360)
         return right
 
     def _populate_file_list(self):
@@ -920,14 +954,28 @@ class SettingsTab(QWidget):
             find_config_key_in_question,
             build_settings_qa_prompt,
             build_settings_qa_grounded_prompt,
+            build_settings_qa_enumeration_prompt,
+            detect_settings_enumeration_scope,
             load_settings_reference,
             find_reference_section,
         )
-        key = find_config_key_in_question(question, self._config_metadata)
 
         # 레퍼런스 문서는 매칭/비매칭 양쪽에서 근거로 쓰인다 (SPEC-SETTINGS-003).
         # 없거나 못 읽으면 빈 문자열 — 예외 없이 폴백 (REQ-011).
         reference_text = load_settings_reference()
+
+        # 전체/파일 단위 열거 질문("모든 파라미터 설명해줘" 등)은 키 매칭보다 먼저
+        # 검사한다 — 질문에 특정 키 이름이 섞여도 단일 키 경로로 새지 않도록.
+        scope = detect_settings_enumeration_scope(question)
+        if scope is not None and reference_text:
+            prompt = build_settings_qa_enumeration_prompt(
+                question, self._config_metadata, reference_text, scope
+            )
+            self._pending_qa_question = question
+            self.qa_requested.emit(prompt)
+            return
+
+        key = find_config_key_in_question(question, self._config_metadata)
 
         if key is None:
             # 비매칭: 하드코딩 거부 대신 레퍼런스 문서 기반 그라운딩 LLM 경로로 라우팅.

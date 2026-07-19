@@ -478,6 +478,98 @@ def build_settings_qa_grounded_prompt(question: str, reference_text: str) -> str
     )
 
 
+# 열거 의도 감지용 키워드. "install"의 all 같은 부분 문자열 오탐을 막되,
+# \b는 한글을 단어 문자로 취급해 "parameter에"를 놓치므로 ASCII 전용
+# lookaround((?<![a-z]) / (?![a-z]))로 영어 단어 경계를 판정한다.
+_ENUM_SUBJECT_WORDS = ("파라미터", "매개변수", "설정", "항목", "키")
+_ENUM_SUBJECT_RE = re.compile(r"(?<![a-z])(parameters?|keys?)(?![a-z])")
+_ENUM_ALL_WORDS = ("모든", "모두", "전부", "전체")
+_ENUM_ALL_RE = re.compile(r"(?<![a-z])all(?![a-z])")
+_ENUM_LIST_WORDS = ("나열", "리스트", "목록", "설명")
+_ENUM_LIST_RE = re.compile(r"(?<![a-z])list(?![a-z])")
+_ENUM_ENV_RE = re.compile(r"(?<![a-z])env(?:\.txt)?(?![a-z0-9])")
+_ENUM_CONFIG_RE = re.compile(r"(?<![a-z])config(?:\.txt)?(?![a-z0-9])")
+
+
+def detect_settings_enumeration_scope(question: str) -> "str | None":
+    """질문이 파라미터 전체/파일 단위 열거 요청인지 감지한다.
+
+    반환값: "all"(env+config 전체) | "env" | "config" | None(열거 아님).
+    UI 무관 순수 함수. 키 매칭(find_config_key_in_question)보다 먼저 호출되어야
+    열거 질문에 특정 키 이름이 섞여 있어도 단일 키 경로로 새지 않는다.
+    """
+    if not question or not question.strip():
+        return None
+    q = question.lower()
+
+    subject = any(w in question for w in _ENUM_SUBJECT_WORDS) or bool(_ENUM_SUBJECT_RE.search(q))
+    if not subject:
+        return None
+
+    mentions_env = bool(_ENUM_ENV_RE.search(q))
+    mentions_config = bool(_ENUM_CONFIG_RE.search(q))
+    wants_all = any(w in question for w in _ENUM_ALL_WORDS) or bool(_ENUM_ALL_RE.search(q))
+    wants_list = any(w in question for w in _ENUM_LIST_WORDS) or bool(_ENUM_LIST_RE.search(q))
+
+    if mentions_env or mentions_config:
+        # 파일 단위 질문: "env.txt 파라미터 설명해줘", "config.txt 키 모두 나열" 등
+        if wants_all or wants_list:
+            if mentions_env and mentions_config:
+                return "all"
+            return "env" if mentions_env else "config"
+        return None
+
+    # 파일 언급 없는 전체 질문: "모든 파라미터에 대해서 설명해주세요" 등
+    if wants_all:
+        return "all"
+    return None
+
+
+def build_settings_qa_enumeration_prompt(question: str, config_metadata: dict,
+                                         reference_text: str, scope: str) -> str:
+    """전체/파일 단위 열거 질문용 프롬프트 (bullet 나열, 누락 금지).
+
+    config_metadata에서 실제 키 목록을 추출해 프롬프트에 명시하고, 각 키마다
+    `- KEY : 한 줄 의미` bullet 하나씩 빠짐없이 답하도록 지시한다. 근거는
+    build_settings_qa_grounded_prompt와 동일하게 레퍼런스 문서로 한정한다.
+    """
+    sections: list[tuple[str, list[str]]] = []
+    if scope in ("all", "env"):
+        sections.append(("env.txt", [
+            k for k, e in config_metadata.get("env", {}).items() if e.get("known")
+        ]))
+    if scope in ("all", "config"):
+        sections.append(("config.txt", [
+            k for k, e in config_metadata.get("config", {}).items() if e.get("known")
+        ]))
+
+    key_list_lines = []
+    for filename, keys in sections:
+        key_list_lines.append(f"[{filename}]")
+        key_list_lines.extend(f"- {k}" for k in keys)
+    key_list = "\n".join(key_list_lines)
+
+    return (
+        "You are a settings expert for the SKHU Agent RAG application.\n\n"
+        f"사용자 질문: {question}\n\n"
+        "아래는 이 애플리케이션의 설정 파라미터·파일에 대한 레퍼런스 문서입니다.\n"
+        "===== 레퍼런스 문서 시작 =====\n"
+        f"{reference_text}\n"
+        "===== 레퍼런스 문서 끝 =====\n\n"
+        "답변 대상 키 목록:\n"
+        f"{key_list}\n\n"
+        "규칙:\n"
+        "- 위 '답변 대상 키 목록'의 모든 키에 대해, 각 키마다 정확히 bullet 한 줄씩\n"
+        "  `- KEY : 한 줄 의미` 형식(마크다운)으로 한국어로 답하세요.\n"
+        "- 파일별로 `**env.txt**` / `**config.txt**` 굵은 글씨 헤더를 붙여 그룹으로 나누세요.\n"
+        "- 목록에 있는 키를 하나도 빠뜨리지 말고, 목록에 없는 키를 추가하지 마세요.\n"
+        "- 각 키의 의미만 간결하게 쓰세요 (기본값·범위·현재값은 쓰지 마세요).\n"
+        "- 의미는 반드시 위 레퍼런스 문서에 있는 내용만 근거로 작성하세요.\n"
+        "- 문서에 근거가 없는 내용은 절대 지어내지 마세요.\n"
+        "- 문서 밖의 외부 지식은 사용하지 마세요."
+    )
+
+
 def mask_sensitive_value(key: str, value: str, entry: dict | None = None) -> str:
     """entry에 mask_in_ui=True가 설정된 키의 값을 'sk-***' 형태로 마스킹한다.
 

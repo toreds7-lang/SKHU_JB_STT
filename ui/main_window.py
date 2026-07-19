@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.dir_tab,      "📁  디렉토리")
         self.tab_widget.addTab(self.cached_tab,   "💾  캐시 응답")
         self.tab_widget.addTab(self.wiki_tab,     "🗺️  지식 그래프")
-        self.tab_widget.addTab(self.settings_tab, "⚙️  설정")
+        self.tab_widget.addTab(self.settings_tab, "⚙️  설정 파일")
 
         self.tab_widget.tabBar().setTabVisible(2, False)  # 문서 탐색
         self.tab_widget.tabBar().setTabVisible(3, False)  # 그래프 탐색
